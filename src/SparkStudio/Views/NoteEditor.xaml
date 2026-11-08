@@ -1,0 +1,79 @@
+<UserControl x:Class="SparkStudio.Views.NoteEditor"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <DockPanel>
+        <!-- Formatting toolbar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="8,4">
+            <WrapPanel Orientation="Horizontal">
+                <ComboBox x:Name="BlockStyle" Width="128" Margin="0,0,8,0" SelectionChanged="BlockStyle_SelectionChanged" ToolTip="Paragraph style">
+                    <ComboBoxItem Content="Normal text" Tag="0"/>
+                    <ComboBoxItem Content="Heading 1" Tag="1"/>
+                    <ComboBoxItem Content="Heading 2" Tag="2"/>
+                    <ComboBoxItem Content="Heading 3" Tag="3"/>
+                    <ComboBoxItem Content="Heading 4" Tag="4"/>
+                    <ComboBoxItem Content="Code block" Tag="code"/>
+                </ComboBox>
+                <Button Style="{StaticResource ToolButton}" Click="Bold_Click" ToolTip="Bold (Ctrl+B)"><TextBlock Text="B" FontWeight="Bold"/></Button>
+                <Button Style="{StaticResource ToolButton}" Click="Italic_Click" ToolTip="Italic (Ctrl+I)"><TextBlock Text="I" FontStyle="Italic" FontFamily="Georgia"/></Button>
+                <Button Style="{StaticResource ToolButton}" Click="Strike_Click" ToolTip="Strikethrough (Ctrl+Shift+X)"><TextBlock Text="S" TextDecorations="Strikethrough"/></Button>
+                <Button Style="{StaticResource ToolButton}" Click="Code_Click" ToolTip="Inline code (Ctrl+E)"><TextBlock Text="&lt;/&gt;" FontFamily="Consolas"/></Button>
+                <Separator Style="{StaticResource ToolSeparator}"/>
+                <Button Style="{StaticResource ToolButton}" Click="WikiLink_Click" ToolTip="Link to a note (type [[ or Ctrl+K)"><TextBlock Text="[[ ]]" FontFamily="Consolas" Foreground="{StaticResource AccentBrush}"/></Button>
+                <Button Style="{StaticResource ToolButton}" Click="ExternalLink_Click" ToolTip="Web link (Ctrl+Shift+K)"><TextBlock Text="&#xE71B;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
+                <Separator Style="{StaticResource ToolSeparator}"/>
+                <Button Style="{StaticResource ToolButton}" Click="Bullets_Click" ToolTip="Bulleted list (type - then space)"><TextBlock Text="&#xE8FD;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
+                <Button Style="{StaticResource ToolButton}" Click="Numbers_Click" ToolTip="Numbered list (type 1. then space)"><TextBlock Text="&#xE9D5;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
+                <Button Style="{StaticResource ToolButton}" Click="Task_Click" ToolTip="Checklist item (type [] then space)"><TextBlock Text="&#xE73A;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
+                <Button Style="{StaticResource ToolButton}" Click="Quote_Click" ToolTip="Quote (type &gt; then space)"><TextBlock Text="&#xE9B2;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
+                <Button Style="{StaticResource ToolButton}" Click="Rule_Click" ToolTip="Divider (type --- then Enter)"><TextBlock Text="&#xE738;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
+                <Separator Style="{StaticResource ToolSeparator}"/>
+                <Button Style="{StaticResource ToolButton}" Command="ApplicationCommands.Undo" CommandTarget="{Binding ElementName=Box}" ToolTip="Undo (Ctrl+Z)"><TextBlock Text="&#xE7A7;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
+                <Button Style="{StaticResource ToolButton}" Command="ApplicationCommands.Redo" CommandTarget="{Binding ElementName=Box}" ToolTip="Redo (Ctrl+Y)"><TextBlock Text="&#xE7A6;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
+            </WrapPanel>
+        </Border>
+
+        <Grid>
+            <RichTextBox x:Name="Box"
+                         BorderThickness="0"
+                         Padding="28,14,28,60"
+                         Background="{StaticResource EditorBrush}"
+                         AcceptsTab="True"
+                         IsDocumentEnabled="True"
+                         SpellCheck.IsEnabled="True"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Disabled"
+                         TextChanged="Box_TextChanged"
+                         SelectionChanged="Box_SelectionChanged"
+                         PreviewKeyDown="Box_PreviewKeyDown"
+                         PreviewTextInput="Box_PreviewTextInput"
+                         PreviewMouseLeftButtonDown="Box_PreviewMouseLeftButtonDown"
+                         MouseMove="Box_MouseMove"/>
+
+            <!-- [[ autocomplete -->
+            <Popup x:Name="Suggest" PlacementTarget="{Binding ElementName=Box}" Placement="Relative"
+                   StaysOpen="False" AllowsTransparency="True" Focusable="False">
+                <Border Background="{StaticResource EditorBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                        CornerRadius="6" Padding="4" MinWidth="280" MaxWidth="420">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="14" ShadowDepth="2" Opacity="0.18"/>
+                    </Border.Effect>
+                    <StackPanel>
+                        <TextBlock Text="Link to note" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="6,2,6,4"/>
+                        <ListBox x:Name="SuggestList" MaxHeight="260" BorderThickness="0" Focusable="False"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 MouseLeftButtonUp="SuggestList_MouseLeftButtonUp">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="4,2">
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{Binding Detail}" FontSize="11" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </StackPanel>
+                </Border>
+            </Popup>
+        </Grid>
+    </DockPanel>
+</UserControl>

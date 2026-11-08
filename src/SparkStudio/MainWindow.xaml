@@ -1,0 +1,151 @@
+﻿<Window x:Class="SparkStudio.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:SparkStudio.ViewModels"
+        xmlns:views="clr-namespace:SparkStudio.Views"
+        Title="SPARK Studio" Height="860" Width="1440" MinWidth="900" MinHeight="560"
+        Background="{StaticResource WindowBrush}" WindowStartupLocation="CenterScreen"
+        Closing="Window_Closing">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
+    <Window.InputBindings>
+        <KeyBinding Key="S" Modifiers="Control" Command="{Binding Workspace.Notes.SaveNowCommand}"/>
+        <KeyBinding Key="F5" Command="{Binding Workspace.Notes.RefreshCommand}"/>
+    </Window.InputBindings>
+
+    <DockPanel>
+        <!-- Top bar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource EditorBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="14,8">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
+                    <TextBlock Text="&#xE945;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{StaticResource AccentBrush}" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBlock Text="SPARK Studio" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+                    <Ellipse Width="8" Height="8" Margin="0,0,6,0" VerticalAlignment="Center">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="{StaticResource LineBrush}"/>
+                                <Setter Property="ToolTip" Value="Live updates offline"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsLive}" Value="True">
+                                        <Setter Property="Fill" Value="{StaticResource LiveBrush}"/>
+                                        <Setter Property="ToolTip" Value="Live updates connected"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Text="{Binding Status}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                    <TextBox Text="{Binding ServerUrl, UpdateSourceTrigger=PropertyChanged}" Width="230" ToolTip="SPARK server URL">
+                        <TextBox.InputBindings>
+                            <KeyBinding Key="Enter" Command="{Binding ConnectCommand}"/>
+                        </TextBox.InputBindings>
+                    </TextBox>
+                    <Button Content="Connect" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" Command="{Binding ConnectCommand}"/>
+                </StackPanel>
+                <Border/>
+            </DockPanel>
+        </Border>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="250" MinWidth="170"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Projects -->
+            <DockPanel Background="{StaticResource PanelBrush}">
+                <DockPanel DockPanel.Dock="Top" Margin="0,4,6,0">
+                    <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="New project"
+                            Command="{Binding NewProjectCommand}"/>
+                    <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE72C;" ToolTip="Refresh projects"
+                            Command="{Binding RefreshProjectsCommand}"/>
+                    <TextBlock Text="PROJECTS" Style="{StaticResource SectionLabel}"/>
+                </DockPanel>
+                <TreeView x:Name="ProjectTree" Style="{StaticResource PlainTree}" ItemsSource="{Binding RootProjects}"
+                          SelectedItemChanged="ProjectTree_SelectedItemChanged">
+                    <TreeView.ItemContainerStyle>
+                        <Style TargetType="TreeViewItem" BasedOn="{StaticResource TreeItem}"/>
+                    </TreeView.ItemContainerStyle>
+                    <TreeView.Resources>
+                        <HierarchicalDataTemplate DataType="{x:Type vm:ProjectNode}" ItemsSource="{Binding Children}">
+                            <StackPanel Orientation="Horizontal">
+                                <StackPanel.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="New subproject…" Click="NewSubproject_Click"/>
+                                    </ContextMenu>
+                                </StackPanel.ContextMenu>
+                                <TextBlock Text="&#xE8B7;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{StaticResource AccentBrush}" Margin="0,1,7,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding Project.Name}" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </HierarchicalDataTemplate>
+                    </TreeView.Resources>
+                </TreeView>
+            </DockPanel>
+
+            <GridSplitter Grid.Column="1" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Stretch"/>
+
+            <!-- Workspace -->
+            <Grid Grid.Column="2">
+                <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" FontSize="14"
+                           Text="Select a project to see its notes and boards.">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Workspace}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+
+                <DockPanel DataContext="{Binding Workspace}">
+                    <DockPanel.Style>
+                        <Style TargetType="DockPanel">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DockPanel.Style>
+                    <Border DockPanel.Dock="Top" Padding="18,12,18,0">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding Project.Name}" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Project.Directory, StringFormat='  {0}'}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Bottom" Margin="4,0,0,3"/>
+                            </StackPanel>
+                            <TextBlock Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" MaxHeight="40" Margin="0,2,0,0" Cursor="Hand"
+                                       ToolTip="Click to edit the project description" MouseLeftButtonUp="Description_Click">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="{Binding Project.Description}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Project.Description}" Value="">
+                                                <Setter Property="Text" Value="Add a description…"/>
+                                                <Setter Property="FontStyle" Value="Italic"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+                    <TabControl SelectedIndex="{Binding SelectedTab}" Margin="12,8,12,12" BorderBrush="{StaticResource LineBrush}" Background="{StaticResource EditorBrush}">
+                        <TabItem Header="Notes">
+                            <views:NotesView DataContext="{Binding Notes}"/>
+                        </TabItem>
+                        <TabItem Header="Boards">
+                            <views:BoardsView DataContext="{Binding Boards}"/>
+                        </TabItem>
+                    </TabControl>
+                </DockPanel>
+            </Grid>
+        </Grid>
+    </DockPanel>
+</Window>

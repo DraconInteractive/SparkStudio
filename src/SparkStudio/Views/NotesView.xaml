@@ -1,0 +1,215 @@
+<UserControl x:Class="SparkStudio.Views.NotesView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:SparkStudio.ViewModels"
+             xmlns:views="clr-namespace:SparkStudio.Views">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <ContextMenu x:Key="NodeMenu">
+            <MenuItem Header="New note" Click="NewNote_Click"/>
+            <MenuItem Header="New folder" Click="NewFolder_Click"/>
+            <Separator/>
+            <MenuItem Header="Rename…" Click="Rename_Click"/>
+            <MenuItem Header="Delete…" Click="Delete_Click"/>
+        </ContextMenu>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="240" MinWidth="150"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="250" MinWidth="0"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- File tree -->
+        <DockPanel Background="{StaticResource PanelBrush}">
+            <DockPanel DockPanel.Dock="Top" Margin="0,2,4,0">
+                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE72C;" ToolTip="Refresh (F5)" Command="{Binding RefreshCommand}"/>
+                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE8F4;" ToolTip="New folder" Click="NewFolder_Click"/>
+                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE70B;" ToolTip="New note" Click="NewNote_Click"/>
+                <TextBlock Text="FILES" Style="{StaticResource SectionLabel}"/>
+            </DockPanel>
+            <TextBlock DockPanel.Dock="Top" Text="{Binding LoadError}" Foreground="{StaticResource DangerBrush}" TextWrapping="Wrap" Margin="12,4">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding LoadError}" Value="{x:Null}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+            <TreeView x:Name="FileTree" Style="{StaticResource PlainTree}" ItemsSource="{Binding Tree}"
+                      SelectedItemChanged="FileTree_SelectedItemChanged" ContextMenu="{StaticResource NodeMenu}">
+                <TreeView.ItemContainerStyle>
+                    <Style TargetType="TreeViewItem" BasedOn="{StaticResource TreeItem}">
+                        <Setter Property="ContextMenu" Value="{StaticResource NodeMenu}"/>
+                    </Style>
+                </TreeView.ItemContainerStyle>
+                <TreeView.Resources>
+                    <HierarchicalDataTemplate DataType="{x:Type vm:FolderNode}" ItemsSource="{Binding Children}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE8B7;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{StaticResource MutedBrush}" Margin="0,1,7,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </HierarchicalDataTemplate>
+                    <DataTemplate DataType="{x:Type vm:FileNode}">
+                        <StackPanel Orientation="Horizontal" ToolTip="{Binding File.Name}">
+                            <TextBlock Text="{Binding Glyph}" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Margin="0,1,7,0" VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsNote}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <TextBlock Text="{Binding Name}" VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsText}" Value="False">
+                                                <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </DataTemplate>
+                </TreeView.Resources>
+            </TreeView>
+        </DockPanel>
+
+        <GridSplitter Grid.Column="1" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Stretch"/>
+
+        <!-- Document -->
+        <Grid Grid.Column="2">
+            <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="&#xE70B;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="34" Foreground="{StaticResource LineBrush}" HorizontalAlignment="Center"/>
+                <TextBlock Text="Open a note from the list, or create one." Foreground="{StaticResource MutedBrush}" Margin="0,10,0,10" HorizontalAlignment="Center"/>
+                <Button Content="New note" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Center" Click="NewNote_Click"/>
+            </StackPanel>
+
+            <DockPanel x:Name="DocumentPanel" Visibility="Collapsed" DataContext="{Binding Current}">
+                <!-- Header -->
+                <Border DockPanel.Dock="Top" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="16,8,10,8">
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding SaveState}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <Button Content="Convert to rich note" Click="ConvertToNote_Click"
+                                    ToolTip="Rename this text file to .md so it opens in the rich editor">
+                                <Button.Style>
+                                    <Style TargetType="Button" BasedOn="{StaticResource FlatButton}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsMarkdown}" Value="True">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                            <Button Content="Save" Style="{StaticResource FlatButton}" Click="Save_Click" ToolTip="Save (Ctrl+S). Notes also save automatically."/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    </DockPanel>
+                </Border>
+
+                <!-- Conflict banner -->
+                <Border DockPanel.Dock="Top" Background="{StaticResource WarnBrush}" Padding="16,8"
+                        Visibility="{Binding RemoteChanged, Converter={StaticResource BoolToVis}}">
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="Load theirs" Style="{StaticResource FlatButton}" Click="Reload_Click"/>
+                            <Button Content="Keep mine" Style="{StaticResource FlatButton}" Click="KeepMine_Click"/>
+                        </StackPanel>
+                        <TextBlock Text="This note was changed on the server (another device?) while you were editing." VerticalAlignment="Center" TextWrapping="Wrap"/>
+                    </DockPanel>
+                </Border>
+                <Border DockPanel.Dock="Top" Background="{StaticResource WarnBrush}" Padding="16,8"
+                        Visibility="{Binding RemoteDeleted, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="This file was deleted on the server. Copy anything you need before closing it." TextWrapping="Wrap"/>
+                </Border>
+
+                <Grid>
+                    <views:NoteEditor x:Name="Editor" Visibility="Collapsed"/>
+                    <TextBox x:Name="PlainBox" Visibility="Collapsed" AcceptsReturn="True" AcceptsTab="True" BorderThickness="0"
+                             FontFamily="Cascadia Mono, Consolas" FontSize="13" Padding="24,16"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                             VerticalContentAlignment="Top" TextChanged="PlainBox_TextChanged"/>
+                </Grid>
+            </DockPanel>
+        </Grid>
+
+        <GridSplitter Grid.Column="3" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Stretch"/>
+
+        <!-- Links panel -->
+        <ScrollViewer Grid.Column="4" Background="{StaticResource PanelBrush}" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="LINKED FROM" Style="{StaticResource SectionLabel}"/>
+                <TextBlock Text="No other notes link here yet." Foreground="{StaticResource MutedBrush}" Margin="12,0,12,6" FontStyle="Italic">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Backlinks.Count}" Value="0">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <ItemsControl ItemsSource="{Binding Backlinks}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Button Style="{StaticResource FlatButton}" HorizontalContentAlignment="Stretch" Margin="4,1" Padding="8,5"
+                                    Command="{Binding DataContext.OpenLinkItemCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                    CommandParameter="{Binding}">
+                                <StackPanel HorizontalAlignment="Left">
+                                    <TextBlock Text="{Binding Title}" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource MutedBrush}" FontSize="11.5" TextWrapping="Wrap" MaxHeight="48" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                            </Button>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock Text="LINKS IN THIS NOTE" Style="{StaticResource SectionLabel}" Margin="12,16,12,4"/>
+                <ItemsControl ItemsSource="{Binding OutgoingLinks}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Button Style="{StaticResource FlatButton}" HorizontalContentAlignment="Stretch" Margin="4,1" Padding="8,4"
+                                    Command="{Binding DataContext.OpenLinkItemCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                    CommandParameter="{Binding}">
+                                <StackPanel HorizontalAlignment="Left">
+                                    <TextBlock Text="{Binding Title}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Resolved}" Value="False">
+                                                        <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                                                        <Setter Property="FontStyle" Value="Italic"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource MutedBrush}" FontSize="11"/>
+                                </StackPanel>
+                            </Button>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock Margin="12,18,12,12" Foreground="{StaticResource MutedBrush}" FontSize="11.5" TextWrapping="Wrap"
+                           Text="Type [[ in a note to link another note. Ctrl+Click a link to follow it; linking to a note that doesn't exist yet creates it."/>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

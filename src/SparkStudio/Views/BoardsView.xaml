@@ -1,0 +1,138 @@
+<UserControl x:Class="SparkStudio.Views.BoardsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Name="Root">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <DockPanel>
+        <!-- Board toolbar -->
+        <Border DockPanel.Dock="Top" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="12,8">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Board" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,8,0"/>
+                <ComboBox Width="220" ItemsSource="{Binding Boards}" SelectedItem="{Binding SelectedBoard}" DisplayMemberPath="Name"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE8AC;" ToolTip="Rename board" Command="{Binding RenameBoardCommand}" Margin="6,0,0,0"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="Delete board" Command="{Binding DeleteBoardCommand}"/>
+                <Button Style="{StaticResource IconButton}" Content="&#xE72C;" ToolTip="Refresh" Command="{Binding RefreshCommand}"/>
+                <Button Content="+ New board" Style="{StaticResource FlatButton}" Command="{Binding NewBoardCommand}" Margin="8,0,0,0"/>
+                <TextBlock Text="Drag cards between columns. Double-click a card to edit it." Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="18,0,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <Grid>
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel.Style>
+                    <Style TargetType="StackPanel">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasBoards}" Value="False">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </StackPanel.Style>
+                <TextBlock Text="This project has no boards yet." Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" Margin="0,0,0,10"/>
+                <Button Content="Create a board" Style="{StaticResource PrimaryButton}" Command="{Binding NewBoardCommand}" HorizontalAlignment="Center"/>
+            </StackPanel>
+
+            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Padding="12"
+                          Visibility="{Binding HasBoards, Converter={StaticResource BoolToVis}}">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Stretch">
+                    <ItemsControl ItemsSource="{Binding Columns}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Width="290" Margin="0,0,12,0" CornerRadius="8" Background="{StaticResource ColumnBrush}" Padding="8"
+                                        AllowDrop="True" Drop="Column_Drop" DragOver="Column_DragOver" DragLeave="Column_DragLeave">
+                                    <DockPanel>
+                                        <!-- Column header -->
+                                        <DockPanel DockPanel.Dock="Top" Margin="4,0,0,6">
+                                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE712;" ToolTip="Column options" Click="ColumnMenu_Click">
+                                                <Button.ContextMenu>
+                                                    <ContextMenu>
+                                                        <MenuItem Header="Rename column…"
+                                                                  Command="{Binding PlacementTarget.Tag.RenameColumnCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                                  CommandParameter="{Binding}"/>
+                                                        <MenuItem Header="Delete column…"
+                                                                  Command="{Binding PlacementTarget.Tag.DeleteColumnCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                                  CommandParameter="{Binding}"/>
+                                                    </ContextMenu>
+                                                </Button.ContextMenu>
+                                                <Button.Tag>
+                                                    <Binding Path="DataContext" ElementName="Root"/>
+                                                </Button.Tag>
+                                            </Button>
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding Tasks.Count}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="6,0"/>
+                                            <TextBlock Text="{Binding Column.Name}" FontWeight="SemiBold" FontSize="13.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                        </DockPanel>
+
+                                        <!-- Add task -->
+                                        <StackPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                            <Button Content="+ Add task" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                                                    Foreground="{StaticResource MutedBrush}"
+                                                    Command="{Binding DataContext.BeginAddTaskCommand, ElementName=Root}" CommandParameter="{Binding}">
+                                                <Button.Style>
+                                                    <Style TargetType="Button" BasedOn="{StaticResource FlatButton}">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsAdding}" Value="True">
+                                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                            <TextBox Text="{Binding NewTaskName, UpdateSourceTrigger=PropertyChanged}"
+                                                     Visibility="{Binding IsAdding, Converter={StaticResource BoolToVis}}"
+                                                     IsVisibleChanged="AddBox_IsVisibleChanged" LostKeyboardFocus="AddBox_LostFocus"
+                                                     ToolTip="Enter to add, Esc to finish">
+                                                <TextBox.InputBindings>
+                                                    <KeyBinding Key="Enter" Command="{Binding DataContext.CommitAddTaskCommand, ElementName=Root}" CommandParameter="{Binding}"/>
+                                                    <KeyBinding Key="Escape" Command="{Binding DataContext.CancelAddTaskCommand, ElementName=Root}" CommandParameter="{Binding}"/>
+                                                </TextBox.InputBindings>
+                                            </TextBox>
+                                        </StackPanel>
+
+                                        <!-- Cards -->
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl ItemsSource="{Binding Tasks}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="{StaticResource EditorBrush}" CornerRadius="6" Padding="10,8" Margin="0,0,0,6"
+                                                                BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Cursor="Hand"
+                                                                MouseLeftButtonDown="Card_MouseLeftButtonDown" MouseMove="Card_MouseMove">
+                                                            <Border.ContextMenu>
+                                                                <ContextMenu>
+                                                                    <MenuItem Header="Edit…" Command="{Binding PlacementTarget.Tag.EditTaskCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" CommandParameter="{Binding}"/>
+                                                                    <MenuItem Header="Delete" Command="{Binding PlacementTarget.Tag.DeleteTaskCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" CommandParameter="{Binding}"/>
+                                                                </ContextMenu>
+                                                            </Border.ContextMenu>
+                                                            <Border.Tag>
+                                                                <Binding Path="DataContext" ElementName="Root"/>
+                                                            </Border.Tag>
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding Task.Name}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                                <TextBlock Text="{Binding Preview}" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,3,0,0"
+                                                                           Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"/>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <Button Content="+ Add column" Style="{StaticResource FlatButton}" VerticalAlignment="Top" Width="200"
+                            Foreground="{StaticResource MutedBrush}" Command="{Binding AddColumnCommand}" Padding="10,10"/>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </DockPanel>
+</UserControl>
