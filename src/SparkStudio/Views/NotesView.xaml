@@ -5,6 +5,34 @@
              xmlns:views="clr-namespace:SparkStudio.Views">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <Style x:Key="SidebarTab" TargetType="Button" BasedOn="{StaticResource FlatButton}">
+            <Setter Property="Padding" Value="10,5"/>
+            <Setter Property="Margin" Value="0,0,2,0"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+        </Style>
+        <Style x:Key="SearchOptionToggle" TargetType="ToggleButton">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,3,0"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd" Background="Transparent" BorderThickness="1" BorderBrush="Transparent" CornerRadius="3" Padding="4,1" VerticalAlignment="Center">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentSoftBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <ContextMenu x:Key="NodeMenu">
             <MenuItem Header="New note" Click="NewNote_Click"/>
             <MenuItem Header="New folder" Click="NewFolder_Click"/>
@@ -23,8 +51,16 @@
             <ColumnDefinition Width="250" MinWidth="0"/>
         </Grid.ColumnDefinitions>
 
-        <!-- File tree -->
+        <!-- Sidebar: files / search -->
         <DockPanel Background="{StaticResource PanelBrush}">
+            <Border DockPanel.Dock="Top" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="6,4,6,2">
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="FilesTab" Content="Files" Style="{StaticResource SidebarTab}" Click="FilesTab_Click"/>
+                    <Button x:Name="SearchTab" Content="Search" Style="{StaticResource SidebarTab}" Click="SearchTab_Click" ToolTip="Search all notes (Ctrl+Shift+F)"/>
+                </StackPanel>
+            </Border>
+            <Grid>
+            <DockPanel x:Name="FilesPane">
             <DockPanel DockPanel.Dock="Top" Margin="0,2,4,0">
                 <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE72C;" ToolTip="Refresh (F5)" Command="{Binding RefreshCommand}"/>
                 <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE8F4;" ToolTip="New folder" Click="NewFolder_Click" IsEnabled="{Binding CanEdit}"/>
@@ -138,6 +174,58 @@
                     </DataTemplate>
                 </TreeView.Resources>
             </TreeView>
+            </DockPanel>
+            <!-- Global search -->
+            <DockPanel x:Name="SearchPane" Visibility="Collapsed">
+                <StackPanel DockPanel.Dock="Top" Margin="8,8,8,4">
+                    <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="4" Background="{StaticResource EditorBrush}">
+                        <DockPanel>
+                            <ToggleButton DockPanel.Dock="Right" Content="ab|" IsChecked="{Binding SearchWholeWord}" Style="{StaticResource SearchOptionToggle}" ToolTip="Whole word"/>
+                            <ToggleButton DockPanel.Dock="Right" Content="Aa" IsChecked="{Binding SearchMatchCase}" Style="{StaticResource SearchOptionToggle}" ToolTip="Match case"/>
+                            <TextBlock DockPanel.Dock="Left" Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{StaticResource MutedBrush}"
+                                       VerticalAlignment="Center" Margin="7,0,0,0"/>
+                            <TextBox x:Name="GlobalSearchBox" Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}" BorderThickness="0"
+                                     Padding="4,5" Background="Transparent" PreviewKeyDown="GlobalSearchBox_PreviewKeyDown"
+                                     ToolTip="Search every note in this project. Enter to search now, Down to go to the results."/>
+                        </DockPanel>
+                    </Border>
+                    <TextBlock Text="{Binding SearchSummary}" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="2,6,2,0" TextWrapping="Wrap"/>
+                </StackPanel>
+                <ListBox x:Name="SearchList" ItemsSource="{Binding SearchItems}" BorderThickness="0" Background="Transparent"
+                         HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                         MouseDoubleClick="SearchList_MouseDoubleClick" PreviewKeyDown="SearchList_PreviewKeyDown">
+                    <ListBox.Resources>
+                        <DataTemplate DataType="{x:Type vm:SearchGroupItem}">
+                            <StackPanel Margin="2,8,2,2" ToolTip="Double-click to open">
+                                <DockPanel>
+                                    <TextBlock DockPanel.Dock="Right" Text="{Binding CountText}" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" TextTrimming="CharacterEllipsis"/>
+                                </DockPanel>
+                                <TextBlock Text="{Binding Folder}" Foreground="{StaticResource MutedBrush}" FontSize="11" TextTrimming="CharacterEllipsis">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Folder}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </DataTemplate>
+                        <DataTemplate DataType="{x:Type vm:SearchHitItem}">
+                            <DockPanel Margin="0,1" ToolTip="{Binding ToolTip}">
+                                <TextBlock DockPanel.Dock="Left" Text="{Binding LineNumber}" Width="32" TextAlignment="Right" Margin="0,0,8,0"
+                                           Foreground="{StaticResource MutedBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" VerticalAlignment="Center"/>
+                                <TextBlock TextTrimming="CharacterEllipsis" FontSize="12"><Run Text="{Binding Before, Mode=OneWay}"/><Run Text="{Binding Match, Mode=OneWay}" Background="#FFE79A" FontWeight="SemiBold"/><Run Text="{Binding After, Mode=OneWay}"/></TextBlock>
+                            </DockPanel>
+                        </DataTemplate>
+                    </ListBox.Resources>
+                </ListBox>
+            </DockPanel>
+            </Grid>
         </DockPanel>
 
         <GridSplitter Grid.Column="1" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Stretch"/>
@@ -215,6 +303,7 @@
                              FontFamily="Cascadia Mono, Consolas" FontSize="13" Padding="24,16"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                              VerticalContentAlignment="Top" TextChanged="PlainBox_TextChanged"/>
+                    <views:FindBar x:Name="Find"/>
                 </Grid>
             </DockPanel>
         </Grid>

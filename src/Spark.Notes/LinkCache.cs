@@ -23,7 +23,19 @@ public sealed class LinkCache
     public void Update(SparkFile f, string text)
     {
         var links = Extract(text);
-        lock (_gate) _byFile[f.Id] = (f.ContentRevision, links);
+        lock (_gate)
+        {
+            _byFile[f.Id] = (f.ContentRevision, links);
+            _texts[f.Id] = text;
+        }
+    }
+
+    private readonly Dictionary<string, string> _texts = new();
+
+    /// <summary>The latest text seen for a file (kept for search), or null if it hasn't been read yet.</summary>
+    public string? TextOf(string fileId)
+    {
+        lock (_gate) return _texts.TryGetValue(fileId, out var t) ? t : null;
     }
 
     public IReadOnlyList<LinkRef> LinksOf(SparkFile f)
@@ -38,7 +50,11 @@ public sealed class LinkCache
         List<SparkFile> stale;
         lock (_gate)
         {
-            foreach (var gone in _byFile.Keys.Where(k => !live.Contains(k)).ToList()) _byFile.Remove(gone);
+            foreach (var gone in _byFile.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                _byFile.Remove(gone);
+                _texts.Remove(gone);
+            }
             stale = files.Where(f => !_byFile.TryGetValue(f.Id, out var e) || e.Revision != f.ContentRevision).ToList();
         }
         using var gate = new SemaphoreSlim(4);

@@ -46,6 +46,31 @@ public sealed class FileNode : FileTreeNode
     public string Glyph => IsNote ? "" : IsText ? "" : "";
 }
 
+/// <summary>A note heading a group of search results.</summary>
+public sealed record SearchGroupItem(SparkFile File, string Title, string Folder, int LineCount, SearchHit FirstHit)
+{
+    public string CountText => LineCount == 1 ? "1 line" : $"{LineCount} lines";
+}
+
+/// <summary>One matching line, split around the (first) match so the view can highlight it.</summary>
+public sealed record SearchHitItem(SearchHit Hit, string Before, string Match, string After)
+{
+    public int LineNumber => Hit.Line;
+    public string ToolTip => $"Line {Hit.Line}: {Hit.LineText.Trim()}" + (Hit.MatchesOnLine > 1 ? $"  ({Hit.MatchesOnLine} matches)" : "");
+
+    public static SearchHitItem From(SearchHit hit)
+    {
+        var line = hit.LineText;
+        int start = Math.Max(0, hit.Column - 40);
+        var before = (start > 0 ? "…" : "") + line[start..hit.Column];
+        if (start == 0) before = before.TrimStart();
+        var match = line.Substring(hit.Column, Math.Min(hit.Length, line.Length - hit.Column));
+        var after = line[(hit.Column + match.Length)..];
+        if (after.Length > 160) after = after[..160] + "…";
+        return new SearchHitItem(hit, before, match, after);
+    }
+}
+
 public sealed record LinkItem(string Title, string Detail, SparkFile? File, WikiLink? Link, bool Resolved);
 
 public partial class OpenDocument : ObservableObject
@@ -122,6 +147,31 @@ public partial class NotesViewModel : ObservableObject
 
     /// <summary>Short description of the offline copy, e.g. "Saved copy from 11/11 14:02".</summary>
     [ObservableProperty] private string? _offlineInfo;
+
+    // ---------- Global search (sidebar "Search" tab) ----------
+
+    /// <summary>0 = file tree, 1 = search results.</summary>
+    [ObservableProperty] private int _sidebarTab;
+    [ObservableProperty] private string _searchQuery = "";
+    [ObservableProperty] private bool _searchMatchCase;
+    [ObservableProperty] private bool _searchWholeWord;
+    [ObservableProperty] private bool _isSearching;
+    [ObservableProperty] private string? _searchSummary;
+
+    /// <summary>Flat list for keyboard navigation: a <see cref="SearchGroupItem"/> per note, then its lines.</summary>
+    public ObservableCollection<object> SearchItems { get; } = new();
+
+    /// <summary>Asks the view to show a hit: (document, text that was searched, hit, query, options).</summary>
+    public event Action<OpenDocument, string, SearchHit, string, SearchOptions>? RevealRequested;
+
+    private readonly Debouncer _searchDebounce = new(TimeSpan.FromMilliseconds(300));
+    private CancellationTokenSource? _searchCts;
+    private Dictionary<string, string> _searchedText = new();
+    private (string Query, SearchOptions Options) _lastSearch = ("", new SearchOptions());
+
+    partial void OnSearchQueryChanged(string value) => _searchDebounce.Run(RunSearchAsync);
+    partial void OnSearchMatchCaseChanged(bool value) => _searchDebounce.Run(RunSearchAsync);
+    partial void OnSearchWholeWordChanged(bool value) => _searchDebounce.Run(RunSearchAsync);
 
     /// <summary>Raised when a document's text should be (re)loaded into the editor. Heading is optional scroll target.</summary>
     public event Action<OpenDocument, string, string?>? DocumentLoaded;
@@ -328,6 +378,102 @@ public partial class NotesViewModel : ObservableObject
 
     [RelayCommand]
     private Task RefreshAsync() => LoadAsync();
+
+    /// <summary>
+    /// Searches every note and text file in this project (the open note's unsaved text included). Online, notes
+    /// changed since the last scan are downloaded first; offline, the saved copies are searched.
+    /// </summary>
+    [RelayCommand]
+    public async Task RunSearchAsync()
+    {
+        _searchCts?.Cancel();
+        var cts = _searchCts = new CancellationTokenSource();
+        var query = SearchQuery.Trim();
+        var options = new SearchOptions(SearchMatchCase, SearchWholeWord);
+        if (query.Length == 0)
+        {
+            SearchItems.Clear();
+            SearchSummary = null;
+            IsSearching = false;
+            return;
+        }
+
+        IsSearching = true;
+        SearchSummary = "Searching…";
+        try
+        {
+            var files = Index.Files
+                .Where(f => NoteOperations.IsLinkScannable(f) && OfflineStore.IsUnder(f.Directory, Project.Directory))
+                .ToList();
+            if (!IsOffline)
+            {
+                try { await _links.RefreshAsync(_client, files, cts.Token); }
+                catch (Exception e) when (e is not OperationCanceledException) { /* search what we have */ }
+            }
+            if (cts.IsCancellationRequested) return;
+
+            var openId = Current?.File.Id;
+            var openText = openId != null && ReadEditor != null ? ReadEditor() : null;
+            var texts = new Dictionary<string, string>();
+            int unavailable = 0;
+            foreach (var f in files)
+            {
+                var text = f.Id == openId ? openText : _links.TextOf(f.Id);
+                if (text != null) texts[f.Id] = text;
+                else unavailable++;
+            }
+
+            var hitsByFile = await Task.Run(() => files
+                .Where(f => texts.ContainsKey(f.Id))
+                .Select(f => (File: f, Hits: NoteSearch.Search(f, texts[f.Id], query, options)))
+                .Where(x => x.Hits.Count > 0)
+                .OrderBy(x => Index.RelativePath(x.File), StringComparer.OrdinalIgnoreCase)
+                .ToList(), cts.Token);
+            if (cts.IsCancellationRequested) return;
+
+            _searchedText = texts;
+            _lastSearch = (query, options);
+            SearchItems.Clear();
+            int lines = 0, matches = 0;
+            foreach (var (file, hits) in hitsByFile)
+            {
+                var title = NoteIndex.IsNote(file) ? NoteIndex.TitleOf(file) : file.Name;
+                var folder = Index.RelativePath(file);
+                folder = folder.Contains('/') ? folder[..folder.LastIndexOf('/')] : "";
+                SearchItems.Add(new SearchGroupItem(file, title, folder, hits.Count, hits[0]));
+                foreach (var h in hits) SearchItems.Add(SearchHitItem.From(h));
+                lines += hits.Count;
+                matches += hits.Sum(h => h.MatchesOnLine);
+            }
+            SearchSummary = hitsByFile.Count == 0
+                ? "No matches"
+                : $"{matches} match{(matches == 1 ? "" : "es")} on {lines} line{(lines == 1 ? "" : "s")} in {hitsByFile.Count} note{(hitsByFile.Count == 1 ? "" : "s")}";
+            if (IsOffline) SearchSummary += $" · saved copies{(unavailable > 0 ? $" ({unavailable} not on this PC)" : "")}";
+            else if (unavailable > 0) SearchSummary += $" · {unavailable} couldn't be read";
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (_searchCts == cts) IsSearching = false;
+        }
+    }
+
+    /// <summary>Opens the note of a search result (a line, or a note header) and shows the match.</summary>
+    public async Task OpenSearchResultAsync(object item)
+    {
+        var hit = item switch
+        {
+            SearchHitItem h => h.Hit,
+            SearchGroupItem g => g.FirstHit,
+            _ => null,
+        };
+        if (hit == null) return;
+        var file = Index.Files.FirstOrDefault(f => f.Id == hit.File.Id) ?? hit.File;
+        await OpenAsync(file, null);
+        if (Current is not { } doc || doc.File.Id != hit.File.Id) return;
+        if (!_searchedText.TryGetValue(hit.File.Id, out var source)) return;
+        RevealRequested?.Invoke(doc, source, hit, _lastSearch.Query, _lastSearch.Options);
+    }
 
     // ---------- Link resolution ----------
 

@@ -67,6 +67,13 @@ Use the server's `https://` address: over plain `http` the token travels unencry
 - Link resolution covers the whole root project (including subprojects): title match, case-insensitive,
   preferring the linking note's folder, then the shortest path.
 - The side panel shows backlinks ("Linked from") and the links in the current note.
+- **Find in note** (Ctrl+F): matches are highlighted as you type; Enter / Down go to the next match,
+  Shift+Enter / Up to the previous one (F3 / Shift+F3 work from the note too), Esc closes. Options: match case
+  (Alt+C), whole word (Alt+W).
+- **Search all notes** (Ctrl+Shift+F, or the Search tab above the file tree) searches every note and `.txt`
+  file in the project, including the open note's unsaved text, and lists matching lines grouped by note, with
+  line numbers. Double-click (or Enter on) a result to open the note with that match selected; the find bar
+  opens on it so Up/Down continue through the note. Offline, the saved copies are searched.
 - Saves are automatic, run one at a time in order (each sends the newest text) and are guarded by the
   server's ETag. Echoes of the app's own saves are recognised and ignored. Only a save the server rejects (412)
   whose text really differs counts as a conflict; ETag-only drift is retried silently.

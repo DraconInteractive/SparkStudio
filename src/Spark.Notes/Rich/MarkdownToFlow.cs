@@ -44,7 +44,9 @@ public sealed class MarkdownToFlow
         foreach (var b in container)
         {
             var wpf = ConvertBlock(b);
-            if (wpf != null) target.Add(wpf);
+            if (wpf == null) continue;
+            NoteDocument.SetSourceLine(wpf, b.Line);
+            target.Add(wpf);
         }
     }
 

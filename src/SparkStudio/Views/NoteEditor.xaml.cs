@@ -53,6 +53,46 @@ public partial class NoteEditor : UserControl
         Box.AddHandler(ToggleButton.CheckedEvent, new RoutedEventHandler(TaskToggled));
         Box.AddHandler(ToggleButton.UncheckedEvent, new RoutedEventHandler(TaskToggled));
         DataObject.AddPastingHandler(Box, OnPaste);
+        Box.IsInactiveSelectionHighlightEnabled = true; // keep find matches visible while the find bar has focus
+    }
+
+    /// <summary>The underlying rich text box (for the find bar).</summary>
+    public RichTextBox RichBox => Box;
+
+    /// <summary>True once the user has changed the note since it was loaded (block source lines may be stale).</summary>
+    private bool _editedSinceLoad;
+
+    /// <summary>Selects a range and scrolls it into view, about a third of the way down.</summary>
+    public void SelectRange(TextRange range)
+    {
+        Box.Selection.Select(range.Start, range.End);
+        var rect = range.Start.GetCharacterRect(LogicalDirection.Forward);
+        if (rect.IsEmpty)
+        {
+            range.Start.Paragraph?.BringIntoView();
+            return;
+        }
+        if (rect.Top < 0 || rect.Bottom > Box.ViewportHeight)
+            Box.ScrollToVerticalOffset(Math.Max(0, Box.VerticalOffset + rect.Top - Box.ViewportHeight / 3));
+    }
+
+    /// <summary>
+    /// The rendered match corresponding to a search hit in the note's Markdown <paramref name="source"/> at
+    /// (<paramref name="line0"/>, <paramref name="column"/>). Uses the block that line was converted into; if the
+    /// note has been edited since loading, falls back to counting matches from the top.
+    /// </summary>
+    public TextRange? LocateSourceHit(string source, int line0, int column, string query, SearchOptions options)
+    {
+        if (!_editedSinceLoad && FlowSearch.BlockForSourceLine(Box.Document, line0) is { } block)
+        {
+            var from = NoteDocument.GetSourceLine(block);
+            var inBlock = FlowSearch.FindIn(FlowSearch.ParagraphsOf(block), query, options);
+            if (inBlock.Count > 0)
+                return inBlock[Math.Min(NoteSearch.OccurrenceIndex(source, from, line0, column, query, options), inBlock.Count - 1)];
+        }
+        var all = FlowSearch.FindAll(Box.Document, query, options);
+        if (all.Count == 0) return null;
+        return all[Math.Min(NoteSearch.OccurrenceIndex(source, 0, line0, column, query, options), all.Count - 1)];
     }
 
     public NoteIndex? Index { get; set; }
@@ -67,6 +107,7 @@ public partial class NoteEditor : UserControl
     public void Load(string markdown, Func<WikiLink, bool> resolver)
     {
         _loading = true;
+        _editedSinceLoad = false;
         try
         {
             CloseSuggestions();
@@ -140,6 +181,7 @@ public partial class NoteEditor : UserControl
     private void Box_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_loading) return;
+        _editedSinceLoad = true;
         Changed?.Invoke();
         if (_editing) return;
         // Auto-conversions run synchronously, after the typed text is really in the document

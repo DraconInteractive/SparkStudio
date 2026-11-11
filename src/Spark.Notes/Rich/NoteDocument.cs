@@ -19,6 +19,16 @@ public sealed record TaskMarker;
 /// <summary>Visual conventions shared by the converters and the editor.</summary>
 public static class NoteDocument
 {
+    /// <summary>
+    /// The 0-based Markdown line a block was converted from (-1 for blocks typed since loading). Lets search
+    /// results jump from a line number in the file to the right place in the editor.
+    /// </summary>
+    public static readonly DependencyProperty SourceLineProperty = DependencyProperty.RegisterAttached(
+        "SourceLine", typeof(int), typeof(NoteDocument), new PropertyMetadata(-1));
+
+    public static int GetSourceLine(DependencyObject o) => (int)o.GetValue(SourceLineProperty);
+    public static void SetSourceLine(DependencyObject o, int line) => o.SetValue(SourceLineProperty, line);
+
     public static FontFamily BodyFont { get; set; } = new("Segoe UI");
     public static FontFamily CodeFont { get; set; } = new("Cascadia Mono, Consolas, Courier New");
     public static double BodySize { get; set; } = 14.5;
