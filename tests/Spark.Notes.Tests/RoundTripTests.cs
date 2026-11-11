@@ -54,6 +54,35 @@ public class RoundTripTests
         Assert.Equal(md, RoundTrip(md));
     }
 
+    /// <summary>Round trip with the document hosted in a RichTextBox, as in the editor.</summary>
+    private static string RoundTripInEditor(string md) => Sta(() =>
+    {
+        var conv = new MarkdownToFlow();
+        var doc = conv.Convert(md);
+        _ = new System.Windows.Controls.RichTextBox(doc);
+        return FlowToMarkdown.Convert(doc, conv.FrontMatter);
+    });
+
+    [Theory]
+    [InlineData("- [[WAF]]\n- [[Specs/Watch#Battery|battery]]\n")]
+    [InlineData("1. [[WAF]]\n2. [site](https://example.com) after\n")]
+    [InlineData("- [ ] [[WAF]]\n")]
+    [InlineData("> [[WAF]] quoted\n")]
+    public void Links_at_the_start_of_list_items_keep_their_text(string md)
+    {
+        Assert.Equal(md, RoundTrip(md));
+        Assert.Equal(md, RoundTripInEditor(md));
+    }
+
+    [Theory]
+    [InlineData("- [[WAF|•\tWAF]]\n", "- [[WAF]]\n")]
+    [InlineData("- [[WAF|•\t•\tWAF]]\n", "- [[WAF]]\n")]
+    [InlineData("1. [[WAF|1.\tthe firewall]]\n", "1. [[WAF|the firewall]]\n")]
+    public void List_markers_leaked_into_link_aliases_are_removed(string md, string expected)
+    {
+        Assert.Equal(expected, RoundTripInEditor(md));
+    }
+
     [Theory]
     [InlineData("**bold**_italic_ next")]
     [InlineData("***both*** then plain")]

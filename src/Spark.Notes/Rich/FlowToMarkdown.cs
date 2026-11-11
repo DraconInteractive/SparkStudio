@@ -201,7 +201,7 @@ public static class FlowToMarkdown
                     break;
                 case Hyperlink h when NoteDocument.WikiTagOf(h) is { } wl:
                 {
-                    var display = new TextRange(h.ContentStart, h.ContentEnd).Text;
+                    var display = NoteDocument.LinkText(h);
                     var link = new WikiLink(wl.Target, wl.Heading, null, wl.IsEmbed);
                     if (display.Length > 0 && display != link.DefaultDisplay && display != wl.Target)
                         link = link with { Alias = display.Replace("]]", "] ]").Replace("|", "/") };
@@ -210,7 +210,7 @@ public static class FlowToMarkdown
                 }
                 case Hyperlink h:
                 {
-                    var text = new TextRange(h.ContentStart, h.ContentEnd).Text;
+                    var text = NoteDocument.LinkText(h);
                     var url = NoteDocument.UrlOf(h) ?? "";
                     var md = text == url && Regex.IsMatch(url, @"^[a-zA-Z][a-zA-Z0-9+.-]*:\S+$")
                         ? $"<{url}>"

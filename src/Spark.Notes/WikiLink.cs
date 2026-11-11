@@ -26,11 +26,18 @@ public sealed record WikiLink(string Target, string? Heading = null, string? Ali
         static string? Opt(Group g) => g.Success ? g.Value.Trim() : null;
         var heading = Opt(m.Groups["heading"]);
         var alias = Opt(m.Groups["alias"]);
+        if (alias != null) alias = StripListMarkers(alias).Trim();
         return new WikiLink(m.Groups["target"].Value.Trim(),
             string.IsNullOrEmpty(heading) ? null : heading,
             string.IsNullOrEmpty(alias) ? null : alias,
             m.Groups["embed"].Success);
     }
+
+    /// <summary>Leading rendered list markers ("•\t", "1.\t") that older versions saved into link text by mistake.</summary>
+    private static readonly Regex LeakedListMarkers = new(@"^(?:\s*(?:[•◦▪▫■□‣⁃]|\d+[.)])\t)+", RegexOptions.Compiled);
+
+    /// <summary>Removes list markers (bullet/number followed by a tab) leaked into the start of link text.</summary>
+    public static string StripListMarkers(string text) => LeakedListMarkers.Replace(text, "");
 
     public static IEnumerable<WikiLink> FindAll(string markdown)
     {

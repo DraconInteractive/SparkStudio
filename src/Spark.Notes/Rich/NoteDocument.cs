@@ -213,6 +213,29 @@ public static class NoteDocument
         return h;
     }
 
+    /// <summary>
+    /// The text a link displays. Built from its own runs rather than a <see cref="TextRange"/>: a TextRange that starts
+    /// at the beginning of a list item also includes the list marker ("•\t"), which would leak into the saved alias.
+    /// </summary>
+    public static string LinkText(Span link)
+    {
+        var sb = new System.Text.StringBuilder();
+        void Walk(InlineCollection inlines)
+        {
+            foreach (var inline in inlines)
+            {
+                switch (inline)
+                {
+                    case Run r: sb.Append(r.Text); break;
+                    case LineBreak: sb.Append(' '); break;
+                    case Span s: Walk(s.Inlines); break;
+                }
+            }
+        }
+        Walk(link.Inlines);
+        return WikiLink.StripListMarkers(sb.ToString());
+    }
+
     /// <summary>The URL of an external link (NavigateUri or a raw string when it wasn't a valid URI).</summary>
     public static string? UrlOf(Hyperlink h) =>
         WikiTagOf(h) != null ? null : h.Tag is string s ? s : h.NavigateUri?.OriginalString;
