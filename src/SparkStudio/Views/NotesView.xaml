@@ -115,6 +115,8 @@
                                     </Style>
                                 </Button.Style>
                             </Button>
+                            <Button Content="Compare" Style="{StaticResource FlatButton}" Click="Compare_Click"
+                                    ToolTip="Compare this note with the server's current version"/>
                             <Button Content="Save" Style="{StaticResource FlatButton}" Click="Save_Click" ToolTip="Save (Ctrl+S). Notes also save automatically."/>
                         </StackPanel>
                         <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
@@ -126,10 +128,13 @@
                         Visibility="{Binding RemoteChanged, Converter={StaticResource BoolToVis}}">
                     <DockPanel>
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                            <Button Content="Load theirs" Style="{StaticResource FlatButton}" Click="Reload_Click"/>
+                            <Button Content="Compare…" Style="{StaticResource PrimaryButton}" Click="Compare_Click" Margin="0,0,6,0"
+                                    ToolTip="See your version and the server's side by side, then choose which to keep"/>
+                            <Button Content="Use server's" Style="{StaticResource FlatButton}" Click="Reload_Click"/>
                             <Button Content="Keep mine" Style="{StaticResource FlatButton}" Click="KeepMine_Click"/>
                         </StackPanel>
-                        <TextBlock Text="This note was changed on the server (another device?) while you were editing." VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        <TextBlock Text="This note was changed on the server (another device?) while you were editing. Autosave is paused until you choose a version."
+                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
                     </DockPanel>
                 </Border>
                 <Border DockPanel.Dock="Top" Background="{StaticResource WarnBrush}" Padding="16,8"

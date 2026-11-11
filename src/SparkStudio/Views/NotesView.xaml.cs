@@ -150,5 +150,6 @@ public partial class NotesView : UserControl
     private void Save_Click(object sender, RoutedEventArgs e) => _vm?.SaveNowCommand.Execute(null);
     private void Reload_Click(object sender, RoutedEventArgs e) => _vm?.ReloadFromServerCommand.Execute(null);
     private void KeepMine_Click(object sender, RoutedEventArgs e) => _vm?.KeepMineCommand.Execute(null);
+    private void Compare_Click(object sender, RoutedEventArgs e) => _vm?.CompareWithServerCommand.Execute(null);
     private void ConvertToNote_Click(object sender, RoutedEventArgs e) => _vm?.ConvertToNoteCommand.Execute(null);
 }

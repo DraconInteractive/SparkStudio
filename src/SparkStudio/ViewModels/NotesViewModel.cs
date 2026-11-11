@@ -48,11 +48,10 @@ public sealed record LinkItem(string Title, string Detail, SparkFile? File, Wiki
 
 public partial class OpenDocument : ObservableObject
 {
-    public OpenDocument(SparkFile file, string text, string etag)
+    public OpenDocument(SparkFile file, NoteSession session)
     {
         _file = file;
-        SavedText = text;
-        ETag = etag;
+        Session = session;
     }
 
     [ObservableProperty]
@@ -64,8 +63,11 @@ public partial class OpenDocument : ObservableObject
     [ObservableProperty] private bool _remoteChanged;
     [ObservableProperty] private bool _remoteDeleted;
 
-    public string ETag { get; set; }
-    public string SavedText { get; set; }
+    /// <summary>Saves, ETag tracking and conflict detection for this note.</summary>
+    public NoteSession Session { get; }
+    public string ETag => Session.ETag;
+    public string SavedText => Session.SavedText;
+    /// <summary>Incremented on every edit; tells whether the text changed while a save was running.</summary>
     public int Version { get; set; }
     public string Title => NoteIndex.IsNote(File) ? NoteIndex.TitleOf(File) : File.Name;
     public bool IsMarkdown => NoteIndex.IsNote(File);
@@ -78,7 +80,7 @@ public partial class NotesViewModel : ObservableObject
     private readonly LinkCache _links = new();
     private readonly Debouncer _autosave = new(TimeSpan.FromMilliseconds(1200));
     private readonly Debouncer _remoteRefresh = new(TimeSpan.FromMilliseconds(600));
-    private bool _saving, _saveAgain;
+    private bool _remoteCheckPending, _remoteCheckForeign;
 
     public NotesViewModel(SparkClient client, Project project, Project root, Settings settings)
     {
@@ -293,7 +295,10 @@ public partial class NotesViewModel : ObservableObject
         {
             var content = await _client.GetTextAsync(file.Id);
             var latest = Index.Files.FirstOrDefault(f => f.Id == file.Id) ?? file;
-            Current = new OpenDocument(latest, content.Text, content.ETag);
+            var session = new NoteSession(_client, file.Id, content.Text, content.ETag);
+            session.Log += SyncLog.Write;
+            session.SaveFinished += OnSaveFinished;
+            Current = new OpenDocument(latest, session);
             foreach (var n in AllNodes().OfType<FileNode>()) n.IsSelected = n.File.Id == file.Id;
             DocumentLoaded?.Invoke(Current, content.Text, heading);
             UpdateLinkPanels();
@@ -328,61 +333,59 @@ public partial class NotesViewModel : ObservableObject
     [RelayCommand]
     private Task SaveNowAsync() => SaveAsync();
 
-    /// <summary>Saves the open document if it has changes. Returns false if the user's work is not safely saved.</summary>
+    /// <summary>
+    /// Saves the open document if it has changes, waiting for any save already running. Returns false if the
+    /// user's work is not safely saved. The text is read now, so switching notes afterwards can't lose it.
+    /// </summary>
     public async Task<bool> SaveAsync()
     {
         _autosave.Cancel();
-        if (Current is not { IsDirty: true } doc || ReadEditor == null) return true;
+        if (Current is not { } doc) return true;
+        if (!doc.IsDirty)
+        {
+            // Nothing new to send, but a save may still be running: wait so callers know the text is stored.
+            await doc.Session.WaitForSavesAsync();
+            if (!doc.IsDirty) return true;
+            return Current == doc && await SaveAsync();
+        }
         if (doc.RemoteChanged) return Ui.Confirm("Unsaved changes",
             "This note has a save conflict and your changes are not saved. Discard them?");
-        if (_saving)
-        {
-            _saveAgain = true;
-            return true;
-        }
+        if (ReadEditor == null) return true;
 
-        _saving = true;
-        try
+        var version = doc.Version;
+        var text = ReadEditor();
+        doc.SaveState = "Saving…";
+        var result = await doc.Session.SaveAsync(text);
+        return ApplySaveResult(doc, result, text, version);
+    }
+
+    private bool ApplySaveResult(OpenDocument doc, SaveResult result, string text, int version)
+    {
+        switch (result.Status)
         {
-            var version = doc.Version;
-            var text = ReadEditor();
-            if (text == doc.SavedText)
-            {
-                doc.IsDirty = false;
-                doc.SaveState = "Saved";
+            case SaveStatus.Saved:
+                if (result.File != null)
+                {
+                    doc.File = result.File;
+                    ReplaceInIndex(result.File);
+                }
+                // A later queued save may have sent newer text; only that caller can mark the note clean.
+                if (doc.Session.SavedText == text && doc.Version == version) doc.IsDirty = false;
+                if (!doc.Session.IsSaving) doc.SaveState = doc.IsDirty ? "Edited" : "Saved";
+                if (doc.Session.SavedText == text)
+                {
+                    _links.Update(doc.File, text);
+                    if (doc == Current) UpdateLinkPanels();
+                }
                 return true;
-            }
-            doc.SaveState = "Saving…";
-            var (file, etag) = await _client.PutTextAsync(doc.File.Id, text, doc.ETag);
-            doc.ETag = etag;
-            doc.SavedText = text;
-            doc.File = file;
-            _links.Update(file, text);
-            ReplaceInIndex(file);
-            if (doc.Version == version) doc.IsDirty = false;
-            doc.SaveState = "Saved";
-            UpdateLinkPanels();
-            return true;
-        }
-        catch (SparkApiException ex) when (ex.Status == HttpStatusCode.PreconditionFailed)
-        {
-            doc.RemoteChanged = true;
-            doc.SaveState = "Conflict: changed on server";
-            return false;
-        }
-        catch (Exception ex)
-        {
-            doc.SaveState = "Save failed: " + ex.Message;
-            return false;
-        }
-        finally
-        {
-            _saving = false;
-            if (_saveAgain)
-            {
-                _saveAgain = false;
-                _ = SaveAsync();
-            }
+            case SaveStatus.Conflict:
+                _autosave.Cancel();
+                doc.RemoteChanged = true;
+                doc.SaveState = "Conflict: changed on server";
+                return false;
+            default:
+                doc.SaveState = "Save failed: " + result.Error?.Message;
+                return false;
         }
     }
 
@@ -391,67 +394,168 @@ public partial class NotesViewModel : ObservableObject
         Index = new NoteIndex(Index.RootDirectory, Index.Files.Select(f => f.Id == file.Id ? file : f));
     }
 
+    /// <summary>
+    /// Opens the side-by-side comparison of the editor and the server's latest version, and applies the choice.
+    /// </summary>
+    [RelayCommand]
+    private async Task CompareWithServerAsync()
+    {
+        if (Current is not { } doc || ReadEditor == null) return;
+        await Ui.Try("Compare with server", async () =>
+        {
+            _autosave.Cancel();
+            await doc.Session.WaitForSavesAsync(); // compare against a settled server revision
+            while (true)
+            {
+                var server = await _client.GetTextAsync(doc.File.Id); // always show what the server has now
+                var mine = ReadEditor();
+                var choice = Views.ConflictDialog.Show(Ui.Owner, doc.Title, mine, server.Text);
+                if (Current != doc) return;
+                if (choice == Views.ConflictChoice.Cancel)
+                {
+                    if (doc.IsDirty && !doc.RemoteChanged && _settings.AutoSave) _autosave.Run(() => SaveAsync());
+                    return;
+                }
+                if (choice == Views.ConflictChoice.UseServer)
+                {
+                    UseServerVersion(doc, server.Text, server.ETag);
+                    return;
+                }
+                var version = doc.Version;
+                var text = ReadEditor();
+                doc.SaveState = "Saving…";
+                var result = await doc.Session.OverwriteAsync(text, server.ETag);
+                if (result.Status == SaveStatus.Conflict)
+                {
+                    Ui.Error("Keep mine", new InvalidOperationException(
+                        "The server version changed again while you were comparing. Review the new version."));
+                    continue;
+                }
+                if (ApplySaveResult(doc, result, text, version)) doc.RemoteChanged = false;
+                return;
+            }
+        });
+    }
+
+    private void UseServerVersion(OpenDocument doc, string text, string etag)
+    {
+        doc.Session.Adopt(text, etag);
+        doc.IsDirty = false;
+        doc.RemoteChanged = false;
+        doc.SaveState = "Loaded server version";
+        DocumentLoaded?.Invoke(doc, text, null);
+        _links.Update(doc.File, text);
+        UpdateLinkPanels();
+    }
+
     [RelayCommand]
     private async Task ReloadFromServerAsync()
     {
         if (Current is not { } doc) return;
-        if (doc.IsDirty && !Ui.Confirm("Reload", "Discard your unsaved changes and load the server version?")) return;
+        if (doc.IsDirty && !Ui.Confirm("Use server version", "Discard your changes and load the server's version of this note?\n\n" +
+                                                             "Use Compare to see the differences first.")) return;
         await Ui.Try("Reload", async () =>
         {
+            await doc.Session.WaitForSavesAsync();
             var content = await _client.GetTextAsync(doc.File.Id);
-            doc.ETag = content.ETag;
-            doc.SavedText = content.Text;
-            doc.IsDirty = false;
-            doc.RemoteChanged = false;
-            doc.SaveState = "Reloaded";
-            DocumentLoaded?.Invoke(doc, content.Text, null);
-            UpdateLinkPanels();
+            UseServerVersion(doc, content.Text, content.ETag);
         });
     }
 
     [RelayCommand]
     private async Task KeepMineAsync()
     {
-        if (Current is not { } doc) return;
-        if (!Ui.Confirm("Overwrite", "Replace the server version of this note with your version?")) return;
-        await Ui.Try("Overwrite", async () =>
+        if (Current is not { } doc || ReadEditor == null) return;
+        if (!Ui.Confirm("Keep mine", "Replace the server's version of this note with yours?\n\n" +
+                                     "Use Compare to see the differences first.")) return;
+        await Ui.Try("Keep mine", async () =>
         {
             var latest = await _client.GetTextAsync(doc.File.Id);
-            doc.ETag = latest.ETag;
-            doc.RemoteChanged = false;
-            doc.IsDirty = true;
-            await SaveAsync();
+            var version = doc.Version;
+            var text = ReadEditor();
+            var result = await doc.Session.OverwriteAsync(text, latest.ETag);
+            if (ApplySaveResult(doc, result, text, version)) doc.RemoteChanged = false;
         });
     }
 
-    /// <summary>File notifications from the server (including other devices' edits).</summary>
+    /// <summary>File notifications from the server (including other devices' edits and echoes of our own saves).</summary>
     public void NotifyFilesChanged(string type, string? resource, bool fromSelf)
     {
-        _remoteRefresh.Run(async () =>
+        // Our own saves come back as notifications; they only need the tree refreshed. Anything else (or a
+        // resync) also checks the open note. A burst of events is debounced into one check.
+        if (!fromSelf) _remoteCheckForeign = true;
+        _remoteRefresh.Run(CheckRemoteAsync);
+    }
+
+    private void OnSaveFinished()
+    {
+        // A listing taken while a save was in flight couldn't be judged; look again now it has landed.
+        if (_remoteCheckPending && Current?.Session.IsSaving == false)
         {
-            try { await RefreshFilesAsync(); }
-            catch (Exception) { return; }
-            if (Current is not { } doc) return;
-            var latest = Index.Files.FirstOrDefault(f => f.Id == doc.File.Id);
-            if (latest == null)
-            {
-                doc.RemoteDeleted = true;
-                doc.SaveState = "Deleted on server";
+            _remoteCheckPending = false;
+            _remoteRefresh.Run(CheckRemoteAsync);
+        }
+    }
+
+    private async Task CheckRemoteAsync()
+    {
+        try { await RefreshFilesAsync(); }
+        catch (Exception) { return; }
+        var foreign = _remoteCheckForeign;
+        _remoteCheckForeign = false;
+        if (Current is not { } doc) return;
+
+        var latest = Index.Files.FirstOrDefault(f => f.Id == doc.File.Id);
+        if (latest == null)
+        {
+            doc.RemoteDeleted = true;
+            doc.SaveState = "Deleted on server";
+            return;
+        }
+        if (!foreign && !_remoteCheckPending) return; // only our own echoes this round
+
+        var listed = SparkClient.ETagFor(latest);
+        switch (doc.Session.Classify(listed))
+        {
+            case RemoteState.InSync:
+            case RemoteState.OwnEcho:
                 return;
-            }
-            if (SparkClient.ETagFor(latest) == doc.ETag) return;
-            if (!doc.IsDirty)
-            {
-                var content = await _client.GetTextAsync(doc.File.Id);
-                doc.ETag = content.ETag;
-                doc.SavedText = content.Text;
-                doc.File = latest;
-                doc.SaveState = "Updated from server";
-                DocumentLoaded?.Invoke(doc, content.Text, null);
-                UpdateLinkPanels();
-            }
-            else doc.RemoteChanged = true;
-        });
+            case RemoteState.Deferred:
+                _remoteCheckPending = true;
+                _remoteCheckForeign = true;
+                return;
+        }
+
+        SyncLog.Write($"foreign revision of {doc.File.Id}: listed {listed}, local {doc.ETag}, dirty={doc.IsDirty}");
+        if (doc.RemoteChanged) return;
+        if (doc.IsDirty)
+        {
+            // Don't guess: try to save. If-Match makes the server the judge (412 = genuine conflict).
+            if (!await SaveAsync() || Current != doc) return;
+            // Our text matched the last save, so nothing was sent; the foreign revision still needs loading.
+            if (doc.IsDirty || doc.Session.Classify(listed) != RemoteState.Foreign) return;
+        }
+
+        var versionBefore = doc.Version;
+        var etagBefore = doc.ETag;
+        var content = await _client.GetTextAsync(doc.File.Id);
+        // The user may have typed (or a save may have started) while that download was in flight.
+        if (Current != doc || doc.Version != versionBefore || doc.ETag != etagBefore || doc.Session.IsSaving)
+        {
+            if (Current == doc && doc.IsDirty && !doc.RemoteChanged) await SaveAsync();
+            return;
+        }
+        doc.File = latest;
+        if (content.Text == doc.SavedText)
+        {
+            doc.Session.Adopt(content.Text, content.ETag); // same text, new revision: nothing to reload
+            return;
+        }
+        doc.Session.Adopt(content.Text, content.ETag);
+        doc.SaveState = "Updated from server";
+        DocumentLoaded?.Invoke(doc, content.Text, null);
+        _links.Update(doc.File, content.Text);
+        UpdateLinkPanels();
     }
 
     // ---------- File operations ----------

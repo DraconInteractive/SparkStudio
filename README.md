@@ -50,8 +50,13 @@ Use the server's `https://` address: over plain `http` the token travels unencry
 - Link resolution covers the whole root project (including subprojects): title match, case-insensitive,
   preferring the linking note's folder, then the shortest path.
 - The side panel shows backlinks ("Linked from") and the links in the current note.
-- Saves are automatic and guarded by the server's ETag; if another device changed the note, you choose
-  whose version to keep. Notes that are only opened are never rewritten.
+- Saves are automatic, run one at a time in order (each sends the newest text) and are guarded by the
+  server's ETag. Echoes of the app's own saves are recognised and ignored. Only a save the server rejects (412)
+  whose text really differs counts as a conflict; ETag-only drift is retried silently.
+- On a conflict, autosave pauses and **Compare…** shows your text and the server's latest side by side
+  (line diff, optional "only differences" view) so you can keep yours or take the server's. **Compare** in
+  the note header does the same at any time. Notes that are only opened are never rewritten.
+- Sync decisions (foreign revisions, conflicts, ETag drift) are logged to `%LOCALAPPDATA%\SparkStudio\sync.log`.
 - **Rename** rewrites `[[links]]` that pointed to the note. On servers with API 1.45+ it uses
   `PATCH /files/{id}` with a new `name` (same ID, ETag and download URL; an open note stays open).
   Older servers fall back to uploading a copy under the new name and deleting the original (new ID).
