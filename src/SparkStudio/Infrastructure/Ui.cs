@@ -31,6 +31,15 @@ public static class Ui
         MessageBox.Show(Owner!, msg, action, MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
+    /// <summary>Explains that an action needs the server, and returns true when offline (so callers can stop).</summary>
+    public static bool BlockedOffline(string action)
+    {
+        if (!Connectivity.IsOffline) return false;
+        MessageBox.Show(Owner!, "You're offline, so files are read-only. This will work again once the connection is back.",
+            action, MessageBoxButton.OK, MessageBoxImage.Information);
+        return true;
+    }
+
     public static bool Confirm(string title, string message) =>
         MessageBox.Show(Owner!, message, title, MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
 
@@ -47,6 +56,8 @@ public static class Ui
         }
         catch (Exception ex)
         {
+            // A lost connection switches the app to offline mode (with its own banner) instead of a popup.
+            if (Connectivity.IsNetworkError(ex) && (Connectivity.IsOffline || !await Connectivity.ReportAsync())) return false;
             Error(action, ex);
             return false;
         }

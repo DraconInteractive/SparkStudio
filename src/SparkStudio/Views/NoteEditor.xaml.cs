@@ -405,8 +405,23 @@ public partial class NoteEditor : UserControl
 
     // ---------- Keyboard ----------
 
+    /// <summary>Locks the note (offline): the text can be read, selected and copied, and links followed.</summary>
+    public bool IsReadOnly
+    {
+        get => Box.IsReadOnly;
+        set
+        {
+            Box.IsReadOnly = value;
+            Box.IsReadOnlyCaretVisible = value;
+            Toolbar.IsEnabled = !value;
+            Toolbar.Opacity = value ? 0.5 : 1;
+            if (value) Suggest.IsOpen = false;
+        }
+    }
+
     private void Box_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (Box.IsReadOnly) return; // our shortcuts edit the document directly; leave navigation/copy to WPF
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         var mods = Keyboard.Modifiers;
 
@@ -941,6 +956,11 @@ public partial class NoteEditor : UserControl
 
     private void OnPaste(object sender, DataObjectPastingEventArgs e)
     {
+        if (Box.IsReadOnly)
+        {
+            e.CancelCommand();
+            return;
+        }
         var data = e.SourceDataObject;
         if (!data.GetDataPresent(DataFormats.UnicodeText)) return;
         var text = data.GetData(DataFormats.UnicodeText) as string ?? "";

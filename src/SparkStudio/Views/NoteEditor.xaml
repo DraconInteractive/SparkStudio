@@ -3,7 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <DockPanel>
         <!-- Formatting toolbar -->
-        <Border DockPanel.Dock="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="8,4">
+        <Border x:Name="Toolbar" DockPanel.Dock="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="8,4">
             <WrapPanel Orientation="Horizontal">
                 <ComboBox x:Name="BlockStyle" Width="128" Margin="0,0,8,0" SelectionChanged="BlockStyle_SelectionChanged" ToolTip="Paragraph style">
                     <ComboBoxItem Content="Normal text" Tag="0"/>

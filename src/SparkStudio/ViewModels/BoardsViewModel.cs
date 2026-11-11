@@ -187,6 +187,13 @@ public partial class BoardsViewModel : ObservableObject
     [ObservableProperty] private Board? _board;
     [ObservableProperty] private bool _isBusy;
 
+    /// <summary>True while the server can't be reached; boards aren't kept offline, so the view is covered.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanEdit))]
+    private bool _isOffline;
+
+    public bool CanEdit => !IsOffline;
+
     /// <summary>True when the server supports task severity (API 1.48+).</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(SortLabel), nameof(IsSortCreated), nameof(IsSortName), nameof(IsSortSeverity))]
@@ -196,6 +203,7 @@ public partial class BoardsViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
+        if (IsOffline) return;
         await Ui.Try("Load boards", async () =>
         {
             var keep = SelectedBoard?.Id;
@@ -252,6 +260,7 @@ public partial class BoardsViewModel : ObservableObject
     /// <summary>Called for board.* / project.* notifications; refreshes after a short quiet period.</summary>
     public void NotifyChanged(string? resource)
     {
+        if (IsOffline) return;
         if (resource != null && !resource.Contains(_project.Id)) return;
         _refresh.Run(async () =>
         {

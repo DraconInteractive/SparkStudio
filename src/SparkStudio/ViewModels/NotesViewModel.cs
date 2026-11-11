@@ -39,6 +39,8 @@ public sealed class FileNode : FileTreeNode
     }
 
     public SparkFile File { get; }
+    /// <summary>False when offline and this file has no saved copy (shown dimmed, can't be opened).</summary>
+    public bool IsAvailable { get; init; } = true;
     public bool IsNote => NoteIndex.IsNote(File);
     public bool IsText => NoteIndex.IsText(File);
     public string Glyph => IsNote ? "" : IsText ? "" : "";
@@ -81,11 +83,15 @@ public partial class NotesViewModel : ObservableObject
     private readonly Debouncer _autosave = new(TimeSpan.FromMilliseconds(1200));
     private readonly Debouncer _remoteRefresh = new(TimeSpan.FromMilliseconds(600));
     private bool _remoteCheckPending, _remoteCheckForeign;
+    private readonly OfflineStore? _store;
+    private CancellationTokenSource? _syncCts;
 
-    public NotesViewModel(SparkClient client, Project project, Project root, Settings settings)
+    public NotesViewModel(SparkClient client, Project project, Project root, Settings settings, OfflineStore? store = null)
     {
         _client = client;
         _settings = settings;
+        _store = store;
+        _isPinned = store?.IsPinned(project.Id) == true;
         Project = project;
         Root = root;
         _index = new NoteIndex(root.Directory, Array.Empty<SparkFile>());
@@ -104,6 +110,19 @@ public partial class NotesViewModel : ObservableObject
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string? _loadError;
 
+    /// <summary>True while the server can't be reached: files come from saved copies and are read-only.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanEdit))]
+    private bool _isOffline;
+
+    public bool CanEdit => !IsOffline;
+
+    /// <summary>True when this project's text files are kept on this PC for offline use.</summary>
+    [ObservableProperty] private bool _isPinned;
+
+    /// <summary>Short description of the offline copy, e.g. "Saved copy from 11/11 14:02".</summary>
+    [ObservableProperty] private string? _offlineInfo;
+
     /// <summary>Raised when a document's text should be (re)loaded into the editor. Heading is optional scroll target.</summary>
     public event Action<OpenDocument, string, string?>? DocumentLoaded;
     /// <summary>Raised when link resolution may have changed (files added/removed).</summary>
@@ -120,6 +139,11 @@ public partial class NotesViewModel : ObservableObject
         LoadError = null;
         try
         {
+            if (IsOffline)
+            {
+                LoadFromCache();
+                return;
+            }
             if (!Project.DriveOnline)
             {
                 LoadError = $"Drive {Project.DriveLetter} is offline, so this project's files are unavailable.";
@@ -136,12 +160,102 @@ public partial class NotesViewModel : ObservableObject
 
     private async Task RefreshFilesAsync()
     {
+        if (IsOffline) return;
         var (dirs, files) = await NoteOperations.ListTreeAsync(_client, Drive, Root.Directory);
         Index = new NoteIndex(Root.Directory, files);
         BuildTree(dirs, files);
         IndexChanged?.Invoke();
         UpdateLinkPanels();
         _ = ScanLinksAsync(files.Where(NoteOperations.IsLinkScannable).ToList());
+        if (_store != null)
+        {
+            try { _store.SaveTree(Root.Directory, dirs, files); } catch (IOException) { }
+            _ = SyncOfflineCopiesAsync(files);
+        }
+    }
+
+    /// <summary>Shows the saved listing and text of this project (offline mode).</summary>
+    private void LoadFromCache()
+    {
+        var tree = _store?.LoadTree(Root.Directory);
+        if (tree == null)
+        {
+            Index = new NoteIndex(Root.Directory, Array.Empty<SparkFile>());
+            Tree.Clear();
+            LoadError = "You're offline and this project hasn't been saved on this PC yet. " +
+                        "Next time you're connected, turn on \"Keep offline\" (cloud button above).";
+            OfflineInfo = null;
+            return;
+        }
+        Index = new NoteIndex(Root.Directory, tree.Files);
+        BuildTree(tree.Directories, tree.Files);
+        int available = 0;
+        foreach (var f in tree.Files.Where(NoteIndex.IsText))
+        {
+            if (_store!.LoadContent(f.Id) is not { } c) continue;
+            available++;
+            if (NoteOperations.IsLinkScannable(f)) _links.Update(f, c.Text);
+        }
+        OfflineInfo = $"Saved copy from {tree.SavedAt:g} · {available} of {tree.Files.Count(NoteIndex.IsText)} text files available";
+        IndexChanged?.Invoke();
+        UpdateLinkPanels();
+    }
+
+    /// <summary>
+    /// Downloads text files of pinned projects whose saved copy is missing or out of date. Runs in the
+    /// background after each listing; a newer run cancels an older one.
+    /// </summary>
+    private async Task SyncOfflineCopiesAsync(IReadOnlyCollection<SparkFile> files)
+    {
+        if (_store == null) return;
+        _syncCts?.Cancel();
+        var cts = _syncCts = new CancellationTokenSource();
+        var wanted = files.Where(f => NoteIndex.IsText(f) && f.SizeBytes <= MaxOfflineBytes && _store.IsWanted(f)).ToList();
+        try
+        {
+            foreach (var f in wanted)
+            {
+                if (cts.IsCancellationRequested || IsOffline) return;
+                if (_store.CachedETag(f.Id) == SparkClient.ETagFor(f)) continue;
+                var content = await _client.GetTextAsync(f.Id, cts.Token);
+                _store.SaveContent(f, content.Text, content.ETag);
+            }
+            if (IsPinned) OfflineInfo = $"Kept offline · {wanted.Count} text file{(wanted.Count == 1 ? "" : "s")} · synced {DateTime.Now:t}";
+        }
+        catch (Exception) { /* best effort: the next listing tries again */ }
+    }
+
+    /// <summary>Text files larger than this aren't kept offline.</summary>
+    private const long MaxOfflineBytes = 8 * 1024 * 1024;
+
+    private void SaveOfflineCopy(SparkFile file, string text, string etag)
+    {
+        try { _store?.SaveContent(file, text, etag); } catch (IOException) { }
+    }
+
+    /// <summary>Turns "keep this project available offline" on or off.</summary>
+    [RelayCommand]
+    private async Task TogglePinAsync()
+    {
+        if (_store == null || Ui.BlockedOffline("Keep offline")) return;
+        var pin = !IsPinned;
+        _store.SetPinned(Project, pin);
+        IsPinned = pin;
+        if (pin)
+        {
+            OfflineInfo = "Saving for offline use…";
+            await Ui.Try("Keep offline", async () =>
+            {
+                var (_, files) = await NoteOperations.ListTreeAsync(_client, Drive, Root.Directory);
+                await SyncOfflineCopiesAsync(files);
+            });
+        }
+        else
+        {
+            var keep = Current != null ? new[] { Current.File.Id } : Array.Empty<string>();
+            _store.PruneUnpinned(Project.Directory, keep);
+            OfflineInfo = null;
+        }
     }
 
     private async Task ScanLinksAsync(IReadOnlyCollection<SparkFile> files)
@@ -156,6 +270,7 @@ public partial class NotesViewModel : ObservableObject
 
     private void BuildTree(List<string> dirs, List<SparkFile> files)
     {
+        bool Available(SparkFile f) => !IsOffline || (NoteIndex.IsText(f) && _store?.HasContent(f.Id) == true);
         var expanded = AllNodes().OfType<FolderNode>().Where(f => f.IsExpanded).Select(f => f.Path).ToHashSet();
         bool first = expanded.Count == 0;
         var selectedId = Current?.File.Id;
@@ -185,7 +300,7 @@ public partial class NotesViewModel : ObservableObject
                      .OrderByDescending(NoteIndex.IsNote).ThenBy(f => f.Name, StringComparer.OrdinalIgnoreCase))
         {
             var folder = GetFolder(f.Directory);
-            folder.Children.Add(new FileNode(f) { Parent = folder, IsSelected = f.Id == selectedId });
+            folder.Children.Add(new FileNode(f) { Parent = folder, IsSelected = f.Id == selectedId, IsAvailable = Available(f) });
         }
         // Folders first, then files.
         foreach (var folder in folders.Values)
@@ -226,6 +341,7 @@ public partial class NotesViewModel : ObservableObject
         var file = Resolve(target);
         if (file == null)
         {
+            if (Ui.BlockedOffline("Create note")) return;
             if (!Ui.Confirm("Create note", $"\"{target}\" doesn't exist yet. Create it?")) return;
             var (dir, name) = SplitLinkTarget(target);
             file = await CreateNoteAsync(dir, name);
@@ -291,10 +407,16 @@ public partial class NotesViewModel : ObservableObject
             return;
         }
         if (!await SaveAsync()) return;
+        if (IsOffline)
+        {
+            OpenFromCache(file, heading);
+            return;
+        }
         await Ui.Try("Open file", async () =>
         {
             var content = await _client.GetTextAsync(file.Id);
             var latest = Index.Files.FirstOrDefault(f => f.Id == file.Id) ?? file;
+            SaveOfflineCopy(latest, content.Text, content.ETag);
             var session = new NoteSession(_client, file.Id, content.Text, content.ETag);
             session.Log += SyncLog.Write;
             session.SaveFinished += OnSaveFinished;
@@ -305,8 +427,27 @@ public partial class NotesViewModel : ObservableObject
         });
     }
 
+    private void OpenFromCache(SparkFile file, string? heading)
+    {
+        if (_store?.LoadContent(file.Id) is not { } cached)
+        {
+            Ui.Error("Open file", new InvalidOperationException(
+                $"\"{file.Name}\" isn't saved on this PC, so it can't be opened while offline. " +
+                "Turn on \"Keep offline\" for this project next time you're connected."));
+            return;
+        }
+        var session = new NoteSession(_client, file.Id, cached.Text, cached.ETag);
+        session.Log += SyncLog.Write;
+        session.SaveFinished += OnSaveFinished;
+        Current = new OpenDocument(cached.File, session) { SaveState = $"Offline · saved copy from {cached.SavedAt:g}" };
+        foreach (var n in AllNodes().OfType<FileNode>()) n.IsSelected = n.File.Id == file.Id;
+        DocumentLoaded?.Invoke(Current, cached.Text, heading);
+        UpdateLinkPanels();
+    }
+
     private async Task OpenExternallyAsync(SparkFile file)
     {
+        if (Ui.BlockedOffline("Open file")) return;
         if (!Ui.Confirm("Open file", $"\"{file.Name}\" isn't a text file. Download it and open it with the default app?")) return;
         await Ui.Try("Open file", async () =>
         {
@@ -321,17 +462,46 @@ public partial class NotesViewModel : ObservableObject
     /// <summary>Called by the view whenever the editor content changes.</summary>
     public void EditorChanged()
     {
-        if (Current is not { } doc) return;
+        if (Current is not { } doc || IsOffline) return;
         doc.Version++;
         doc.IsDirty = true;
         doc.SaveState = "Edited";
-        if (_settings.AutoSave && !doc.RemoteChanged) _autosave.Run(() => SaveAsync());
+        if (_settings.AutoSave && !doc.RemoteChanged) _autosave.Run(AutoSaveAsync);
+    }
+
+    private Task AutoSaveAsync() => IsOffline ? Task.CompletedTask : SaveAsync();
+
+    /// <summary>Locks (offline) or unlocks editing. Unsaved text in the open note is kept either way.</summary>
+    public void SetOffline(bool offline)
+    {
+        if (IsOffline == offline) return;
+        IsOffline = offline;
+        if (offline)
+        {
+            _autosave.Cancel();
+            _syncCts?.Cancel();
+            if (Current is { } doc)
+                doc.SaveState = doc.IsDirty ? "Offline · unsaved changes kept until you reconnect" : "Offline · read-only";
+        }
+    }
+
+    /// <summary>Back online after a reload: save text kept while offline, and pick up remote changes.</summary>
+    public async Task ResumeOnlineAsync()
+    {
+        if (Current is { } doc && !doc.RemoteChanged)
+        {
+            doc.SaveState = doc.IsDirty ? "Edited" : "Saved";
+            // Edits kept while offline: save now. If-Match makes the server the judge, so a change made
+            // elsewhere in the meantime still shows up as a conflict instead of being overwritten.
+            if (doc.IsDirty) await SaveAsync();
+        }
+        NotifyFilesChanged("resync", null, false);
     }
 
     public void RefreshOutgoingLinks() => UpdateLinkPanels();
 
     [RelayCommand]
-    private Task SaveNowAsync() => SaveAsync();
+    private Task SaveNowAsync() => Ui.BlockedOffline("Save") ? Task.CompletedTask : SaveAsync();
 
     /// <summary>
     /// Saves the open document if it has changes, waiting for any save already running. Returns false if the
@@ -350,6 +520,9 @@ public partial class NotesViewModel : ObservableObject
         }
         if (doc.RemoteChanged) return Ui.Confirm("Unsaved changes",
             "This note has a save conflict and your changes are not saved. Discard them?");
+        if (IsOffline) return Ui.Confirm("Unsaved changes",
+            "You're offline, so the changes to this note can't be saved yet. Stay on it and they'll be saved " +
+            "when the connection returns.\n\nDiscard them instead?");
         if (ReadEditor == null) return true;
 
         var version = doc.Version;
@@ -375,6 +548,7 @@ public partial class NotesViewModel : ObservableObject
                 if (doc.Session.SavedText == text)
                 {
                     _links.Update(doc.File, text);
+                    SaveOfflineCopy(doc.File, text, doc.ETag);
                     if (doc == Current) UpdateLinkPanels();
                 }
                 return true;
@@ -384,6 +558,16 @@ public partial class NotesViewModel : ObservableObject
                 doc.SaveState = "Conflict: changed on server";
                 return false;
             default:
+                if (result.Error != null && Connectivity.IsNetworkError(result.Error))
+                {
+                    // Probably offline: keep the text, and say so rather than showing a socket error.
+                    doc.SaveState = "Not saved yet · can't reach the server";
+                    _ = Connectivity.ReportAsync().ContinueWith(t =>
+                    {
+                        if (IsOffline && doc.IsDirty) doc.SaveState = "Offline · unsaved changes kept until you reconnect";
+                    }, TaskScheduler.FromCurrentSynchronizationContext());
+                    return false;
+                }
                 doc.SaveState = "Save failed: " + result.Error?.Message;
                 return false;
         }
@@ -400,6 +584,7 @@ public partial class NotesViewModel : ObservableObject
     [RelayCommand]
     private async Task CompareWithServerAsync()
     {
+        if (Ui.BlockedOffline("Compare with server")) return;
         if (Current is not { } doc || ReadEditor == null) return;
         await Ui.Try("Compare with server", async () =>
         {
@@ -439,6 +624,7 @@ public partial class NotesViewModel : ObservableObject
 
     private void UseServerVersion(OpenDocument doc, string text, string etag)
     {
+        SaveOfflineCopy(doc.File, text, etag);
         doc.Session.Adopt(text, etag);
         doc.IsDirty = false;
         doc.RemoteChanged = false;
@@ -451,6 +637,7 @@ public partial class NotesViewModel : ObservableObject
     [RelayCommand]
     private async Task ReloadFromServerAsync()
     {
+        if (Ui.BlockedOffline("Use server version")) return;
         if (Current is not { } doc) return;
         if (doc.IsDirty && !Ui.Confirm("Use server version", "Discard your changes and load the server's version of this note?\n\n" +
                                                              "Use Compare to see the differences first.")) return;
@@ -465,6 +652,7 @@ public partial class NotesViewModel : ObservableObject
     [RelayCommand]
     private async Task KeepMineAsync()
     {
+        if (Ui.BlockedOffline("Keep mine")) return;
         if (Current is not { } doc || ReadEditor == null) return;
         if (!Ui.Confirm("Keep mine", "Replace the server's version of this note with yours?\n\n" +
                                      "Use Compare to see the differences first.")) return;
@@ -499,6 +687,7 @@ public partial class NotesViewModel : ObservableObject
 
     private async Task CheckRemoteAsync()
     {
+        if (IsOffline) return;
         try { await RefreshFilesAsync(); }
         catch (Exception) { return; }
         var foreign = _remoteCheckForeign;
@@ -552,6 +741,7 @@ public partial class NotesViewModel : ObservableObject
             return;
         }
         doc.Session.Adopt(content.Text, content.ETag);
+        SaveOfflineCopy(doc.File, content.Text, content.ETag);
         doc.SaveState = "Updated from server";
         DocumentLoaded?.Invoke(doc, content.Text, null);
         _links.Update(doc.File, content.Text);
@@ -570,6 +760,7 @@ public partial class NotesViewModel : ObservableObject
     [RelayCommand]
     private async Task NewNoteAsync(FileTreeNode? node)
     {
+        if (Ui.BlockedOffline("New note")) return;
         var name = Ui.Prompt("New note", "Note title", "Untitled");
         if (string.IsNullOrWhiteSpace(name)) return;
         var file = await CreateNoteAsync(FolderOf(node), name.Trim());
@@ -612,6 +803,7 @@ public partial class NotesViewModel : ObservableObject
     [RelayCommand]
     private async Task NewFolderAsync(FileTreeNode? node)
     {
+        if (Ui.BlockedOffline("New folder")) return;
         var name = Ui.Prompt("New folder", "Folder name");
         if (string.IsNullOrWhiteSpace(name) || !ValidName(name.Trim())) return;
         var path = FolderOf(node) + "/" + name.Trim();
@@ -626,6 +818,7 @@ public partial class NotesViewModel : ObservableObject
     [RelayCommand]
     private async Task DeleteNodeAsync(FileTreeNode? node)
     {
+        if (Ui.BlockedOffline("Delete")) return;
         switch (node)
         {
             case FileNode fn:
@@ -668,6 +861,7 @@ public partial class NotesViewModel : ObservableObject
     [RelayCommand]
     private async Task RenameNodeAsync(FileTreeNode? node)
     {
+        if (Ui.BlockedOffline("Rename")) return;
         if (node is not FileNode fn) return;
         var file = fn.File;
         var isNote = NoteIndex.IsNote(file);
@@ -682,6 +876,7 @@ public partial class NotesViewModel : ObservableObject
     [RelayCommand]
     private async Task ConvertToNoteAsync()
     {
+        if (Ui.BlockedOffline("Convert to note")) return;
         if (Current is not { IsMarkdown: false } doc) return;
         var newName = Path.GetFileNameWithoutExtension(doc.File.Name) + NoteIndex.NoteExtension;
         if (!Ui.Confirm("Convert to note", $"Convert \"{doc.File.Name}\" into the rich note \"{newName}\"?\n\n" +

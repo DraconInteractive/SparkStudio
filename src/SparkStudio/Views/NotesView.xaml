@@ -27,10 +27,54 @@
         <DockPanel Background="{StaticResource PanelBrush}">
             <DockPanel DockPanel.Dock="Top" Margin="0,2,4,0">
                 <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE72C;" ToolTip="Refresh (F5)" Command="{Binding RefreshCommand}"/>
-                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE8F4;" ToolTip="New folder" Click="NewFolder_Click"/>
-                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE70B;" ToolTip="New note" Click="NewNote_Click"/>
+                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE8F4;" ToolTip="New folder" Click="NewFolder_Click" IsEnabled="{Binding CanEdit}"/>
+                <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE70B;" ToolTip="New note" Click="NewNote_Click" IsEnabled="{Binding CanEdit}"/>
+                <ToggleButton DockPanel.Dock="Right" IsChecked="{Binding IsPinned, Mode=OneWay}" Command="{Binding TogglePinCommand}" IsEnabled="{Binding CanEdit}">
+                    <ToggleButton.Style>
+                        <Style TargetType="ToggleButton">
+                            <Setter Property="ToolTip" Value="Keep this project's notes on this PC, so they can be read offline"/>
+                            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                            <Setter Property="Cursor" Value="Hand"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Bd" Background="Transparent" CornerRadius="4" Padding="6,4">
+                                            <TextBlock x:Name="Glyph" Text="&#xE753;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14"
+                                                       Foreground="{TemplateBinding Foreground}"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource HoverBrush}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="Glyph" Property="Text" Value="&#xEBD3;"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                            <Style.Triggers>
+                                <Trigger Property="IsChecked" Value="True">
+                                    <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                    <Setter Property="ToolTip" Value="Kept offline. Click to stop keeping this project's notes on this PC"/>
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ToggleButton.Style>
+                </ToggleButton>
                 <TextBlock Text="FILES" Style="{StaticResource SectionLabel}"/>
             </DockPanel>
+            <TextBlock DockPanel.Dock="Top" Text="{Binding OfflineInfo}" Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="12,0,12,4">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding OfflineInfo}" Value="{x:Null}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
             <TextBlock DockPanel.Dock="Top" Text="{Binding LoadError}" Foreground="{StaticResource DangerBrush}" TextWrapping="Wrap" Margin="12,4">
                 <TextBlock.Style>
                     <Style TargetType="TextBlock">
@@ -58,6 +102,15 @@
                     </HierarchicalDataTemplate>
                     <DataTemplate DataType="{x:Type vm:FileNode}">
                         <StackPanel Orientation="Horizontal" ToolTip="{Binding File.Name}">
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsAvailable}" Value="False">
+                                            <Setter Property="Opacity" Value="0.4"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
                             <TextBlock Text="{Binding Glyph}" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Margin="0,1,7,0" VerticalAlignment="Center">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
@@ -94,7 +147,7 @@
             <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <TextBlock Text="&#xE70B;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="34" Foreground="{StaticResource LineBrush}" HorizontalAlignment="Center"/>
                 <TextBlock Text="Open a note from the list, or create one." Foreground="{StaticResource MutedBrush}" Margin="0,10,0,10" HorizontalAlignment="Center"/>
-                <Button Content="New note" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Center" Click="NewNote_Click"/>
+                <Button Content="New note" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Center" Click="NewNote_Click" IsEnabled="{Binding CanEdit}"/>
             </StackPanel>
 
             <DockPanel x:Name="DocumentPanel" Visibility="Collapsed" DataContext="{Binding Current}">
@@ -116,10 +169,24 @@
                                 </Button.Style>
                             </Button>
                             <Button Content="Compare" Style="{StaticResource FlatButton}" Click="Compare_Click"
+                                    IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                     ToolTip="Compare this note with the server's current version"/>
-                            <Button Content="Save" Style="{StaticResource FlatButton}" Click="Save_Click" ToolTip="Save (Ctrl+S). Notes also save automatically."/>
+                            <Button Content="Save" Style="{StaticResource FlatButton}" Click="Save_Click" ToolTip="Save (Ctrl+S). Notes also save automatically."
+                                    IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
                         </StackPanel>
                         <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    </DockPanel>
+                </Border>
+
+                <!-- Offline banner -->
+                <Border DockPanel.Dock="Top" Background="{StaticResource WarnBrush}" Padding="16,8"
+                        Visibility="{Binding DataContext.IsOffline, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}">
+                    <DockPanel>
+                        <TextBlock Text="&#xF384;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Margin="0,2,10,0" VerticalAlignment="Top"/>
+                        <TextBlock TextWrapping="Wrap" VerticalAlignment="Center">
+                            <Run FontWeight="SemiBold" Text="You're offline."/>
+                            <Run Text="This is the copy saved on this PC, and it's locked against changes until the connection returns."/>
+                        </TextBlock>
                     </DockPanel>
                 </Border>
 

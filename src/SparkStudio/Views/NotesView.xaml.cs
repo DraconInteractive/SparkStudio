@@ -61,6 +61,7 @@ public partial class NotesView : UserControl
         vm.IndexChanged += OnIndexChanged;
         vm.PropertyChanged += OnVmPropertyChanged;
         vm.ReadEditor = () => vm.Current is { } doc ? ReadCurrent(doc) : "";
+        ApplyReadOnly();
         if (vm.Current is { } current)
         {
             var text = _detachedText.Remove(vm, out var pending) ? pending : current.SavedText;
@@ -71,8 +72,16 @@ public partial class NotesView : UserControl
 
     private string ReadCurrent(OpenDocument doc) => doc.IsMarkdown ? Editor.GetMarkdown() : PlainBox.Text;
 
+    private void ApplyReadOnly()
+    {
+        var locked = _vm?.IsOffline == true;
+        Editor.IsReadOnly = locked;
+        PlainBox.IsReadOnly = locked;
+    }
+
     private void OnVmPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(NotesViewModel.IsOffline)) ApplyReadOnly();
         if (e.PropertyName == nameof(NotesViewModel.Current) && _vm?.Current == null) ShowDocument(null);
     }
 

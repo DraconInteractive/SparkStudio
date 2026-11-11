@@ -8,6 +8,12 @@ namespace SparkStudio.Infrastructure;
 /// <summary>Outcome of checking a server URL + device ID + token with POST /auth/verify.</summary>
 public sealed record ConnectionCheck(bool Ok, string Headline, string Details, AuthInfo? Auth, IReadOnlyList<string> MissingPermissions)
 {
+    /// <summary>True when the server couldn't be reached at all (network down, DNS, timeout): go offline.</summary>
+    public bool Unreachable { get; init; }
+
+    /// <summary>How long to wait for the server before treating it as unreachable.</summary>
+    public static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(8);
+
     public static bool IsPlaintext(Uri uri) => uri.Scheme == Uri.UriSchemeHttp;
 
     /// <summary>Verifies credentials against the server. Never throws.</summary>
@@ -16,7 +22,8 @@ public sealed record ConnectionCheck(bool Ok, string Headline, string Details, A
         AuthInfo auth;
         try
         {
-            auth = await client.VerifyAsync(deviceId);
+            using var cts = new CancellationTokenSource(ProbeTimeout);
+            auth = await client.VerifyAsync(deviceId, cts.Token);
         }
         catch (SparkApiException ex) when (ex.Status == HttpStatusCode.Unauthorized)
         {
@@ -37,13 +44,13 @@ public sealed record ConnectionCheck(bool Ok, string Headline, string Details, A
             // Servers that predate /auth/verify are open-mode only.
             return new ConnectionCheck(true, "Connected", "This server doesn't support device authentication.", null, Array.Empty<string>());
         }
-        catch (HttpRequestException ex)
+        catch (HttpRequestException ex) when (ex.StatusCode == null)
         {
-            return Fail("Can't reach the server", ex.InnerException?.Message ?? ex.Message);
+            return Fail("Can't reach the server", ex.InnerException?.Message ?? ex.Message) with { Unreachable = true };
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
-            return Fail("Can't reach the server", "The request timed out.");
+            return Fail("Can't reach the server", "The server didn't respond in time.") with { Unreachable = true };
         }
         catch (Exception ex)
         {

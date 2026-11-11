@@ -38,7 +38,7 @@
     <DockPanel>
         <!-- Board toolbar -->
         <Border DockPanel.Dock="Top" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="12,8">
-            <StackPanel Orientation="Horizontal">
+            <StackPanel Orientation="Horizontal" IsEnabled="{Binding CanEdit}">
                 <TextBlock Text="Board" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,8,0"/>
                 <ComboBox Width="220" ItemsSource="{Binding Boards}" SelectedItem="{Binding SelectedBoard}" DisplayMemberPath="Name"/>
                 <Button Style="{StaticResource IconButton}" Content="&#xE8AC;" ToolTip="Rename board" Command="{Binding RenameBoardCommand}" Margin="6,0,0,0"/>
@@ -202,6 +202,16 @@
                             Foreground="{StaticResource MutedBrush}" Command="{Binding AddColumnCommand}" Padding="10,10"/>
                 </StackPanel>
             </ScrollViewer>
+
+            <!-- Offline: boards aren't kept on this PC, and editing needs the server. -->
+            <Border Background="{StaticResource WindowBrush}" Visibility="{Binding IsOffline, Converter={StaticResource BoolToVis}}">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="420">
+                    <TextBlock Text="&#xF384;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="34" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center"/>
+                    <TextBlock Text="Boards need a connection" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,10,0,4"/>
+                    <TextBlock Text="You're offline. Boards will be back as soon as the server can be reached; notes saved on this PC are still available in the Notes tab."
+                               Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" TextAlignment="Center"/>
+                </StackPanel>
+            </Border>
         </Grid>
     </DockPanel>
 </UserControl>
