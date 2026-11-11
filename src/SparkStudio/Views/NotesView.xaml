@@ -48,7 +48,7 @@
             <ColumnDefinition Width="Auto"/>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
-            <ColumnDefinition Width="250" MinWidth="0"/>
+            <ColumnDefinition x:Name="LinksColumn" Width="250" MinWidth="0"/>
         </Grid.ColumnDefinitions>
 
         <!-- Sidebar: files / search -->
@@ -308,10 +308,28 @@
             </DockPanel>
         </Grid>
 
-        <GridSplitter Grid.Column="3" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Stretch"/>
+        <GridSplitter x:Name="LinksSplitter" Grid.Column="3" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Stretch"
+                      DragCompleted="LinksSplitter_DragCompleted"/>
 
-        <!-- Links panel -->
-        <ScrollViewer Grid.Column="4" Background="{StaticResource PanelBrush}" VerticalScrollBarVisibility="Auto">
+        <!-- Links panel (minimisable) -->
+        <Border x:Name="LinksStrip" Grid.Column="4" Width="30" Background="{StaticResource PanelBrush}" Visibility="Collapsed"
+                BorderBrush="{StaticResource LineBrush}" BorderThickness="1,0,0,0" Cursor="Hand"
+                MouseLeftButtonUp="LinksStrip_Click" ToolTip="Show the links panel">
+            <StackPanel>
+                <TextBlock Text="&#xE76B;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11" Foreground="{StaticResource MutedBrush}"
+                           HorizontalAlignment="Center" Margin="0,12,0,10"/>
+                <TextBlock Text="LINKS" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center">
+                    <TextBlock.LayoutTransform>
+                        <RotateTransform Angle="90"/>
+                    </TextBlock.LayoutTransform>
+                </TextBlock>
+                <TextBlock x:Name="LinksStripCount" FontSize="10.5" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Center" Margin="0,8,0,0"/>
+            </StackPanel>
+        </Border>
+        <DockPanel x:Name="LinksPanel" Grid.Column="4" Background="{StaticResource PanelBrush}">
+            <Button DockPanel.Dock="Top" HorizontalAlignment="Right" Margin="0,4,4,-26" Panel.ZIndex="1" Style="{StaticResource IconButton}"
+                    Content="&#xE76C;" FontSize="11" ToolTip="Minimise the links panel" Click="CollapseLinks_Click"/>
+        <ScrollViewer Background="{StaticResource PanelBrush}" VerticalScrollBarVisibility="Auto">
             <StackPanel>
                 <TextBlock Text="LINKED FROM" Style="{StaticResource SectionLabel}"/>
                 <TextBlock Text="No other notes link here yet." Foreground="{StaticResource MutedBrush}" Margin="12,0,12,6" FontStyle="Italic">
@@ -372,5 +390,6 @@
                            Text="Type [[ in a note to link another note. Ctrl+Click a link to follow it; linking to a note that doesn't exist yet creates it."/>
             </StackPanel>
         </ScrollViewer>
+        </DockPanel>
     </Grid>
 </UserControl>

@@ -44,6 +44,7 @@ public partial class NotesView : UserControl
             var old = _vm;
             old.DocumentLoaded -= OnDocumentLoaded;
             old.RevealRequested -= OnRevealRequested;
+            old.Backlinks.CollectionChanged -= OnBacklinksChanged;
             old.IndexChanged -= OnIndexChanged;
             old.PropertyChanged -= OnVmPropertyChanged;
             if (old.Current != null)
@@ -65,7 +66,9 @@ public partial class NotesView : UserControl
         if (vm == null) return;
         vm.DocumentLoaded += OnDocumentLoaded;
         vm.RevealRequested += OnRevealRequested;
+        vm.Backlinks.CollectionChanged += OnBacklinksChanged;
         UpdateSidebar();
+        ApplyLinksPanel();
         vm.IndexChanged += OnIndexChanged;
         vm.PropertyChanged += OnVmPropertyChanged;
         vm.ReadEditor = () => vm.Current is { } doc ? ReadCurrent(doc) : "";
@@ -315,5 +318,47 @@ public partial class NotesView : UserControl
                 });
             }
         });
+    }
+
+    // ---------- Links panel ----------
+
+    private void CollapseLinks_Click(object sender, RoutedEventArgs e) => SetLinksCollapsed(true);
+    private void LinksStrip_Click(object sender, MouseButtonEventArgs e) => SetLinksCollapsed(false);
+
+    private void SetLinksCollapsed(bool collapsed)
+    {
+        if (_vm == null) return;
+        if (collapsed && LinksColumn.ActualWidth > 40) _vm.Settings.LinksPanelWidth = LinksColumn.ActualWidth;
+        _vm.Settings.LinksPanelCollapsed = collapsed;
+        _vm.Settings.Save();
+        ApplyLinksPanel();
+    }
+
+    /// <summary>Shows the panel at its saved width, or the thin strip (with a backlink count) when minimised.</summary>
+    private void ApplyLinksPanel()
+    {
+        if (_vm == null) return;
+        var collapsed = _vm.Settings.LinksPanelCollapsed;
+        LinksPanel.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        LinksStrip.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        LinksSplitter.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        LinksColumn.Width = collapsed ? GridLength.Auto : new GridLength(Math.Max(150, _vm.Settings.LinksPanelWidth));
+        UpdateLinksStripCount();
+    }
+
+    private void OnBacklinksChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e) => UpdateLinksStripCount();
+
+    private void UpdateLinksStripCount()
+    {
+        var n = _vm?.Backlinks.Count ?? 0;
+        LinksStripCount.Text = n > 0 ? n.ToString() : "";
+        LinksStrip.ToolTip = n > 0 ? $"Show the links panel ({n} note{(n == 1 ? "" : "s")} link here)" : "Show the links panel";
+    }
+
+    private void LinksSplitter_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    {
+        if (_vm == null || LinksColumn.ActualWidth < 40) return;
+        _vm.Settings.LinksPanelWidth = LinksColumn.ActualWidth;
+        _vm.Settings.Save();
     }
 }

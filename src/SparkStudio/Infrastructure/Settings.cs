@@ -53,6 +53,11 @@ public sealed class Settings
     public string BoardSort { get; set; } = "Created";
     public bool BoardSortDescending { get; set; }
 
+    /// <summary>The links panel (right of the note) is minimised to a thin strip.</summary>
+    public bool LinksPanelCollapsed { get; set; }
+    /// <summary>Width of the links panel when shown, in pixels.</summary>
+    public double LinksPanelWidth { get; set; } = 250;
+
     /// <summary>Per-server credentials, keyed by normalised URL.</summary>
     public Dictionary<string, ConnectionProfile> Connections { get; set; } = new();
 

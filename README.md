@@ -66,7 +66,9 @@ Use the server's `https://` address: over plain `http` the token travels unencry
   `[[folder/Title]]` work like Obsidian. **Ctrl+Click** follows a link; a link to a missing note offers to create it.
 - Link resolution covers the whole root project (including subprojects): title match, case-insensitive,
   preferring the linking note's folder, then the shortest path.
-- The side panel shows backlinks ("Linked from") and the links in the current note.
+- The side panel shows backlinks ("Linked from") and the links in the current note. Minimise it with the › button;
+  it shrinks to a thin strip (showing the backlink count) that you click to bring it back. Its state and width are
+  remembered.
 - **Find in note** (Ctrl+F): matches are highlighted as you type; Enter / Down go to the next match,
   Shift+Enter / Up to the previous one (F3 / Shift+F3 work from the note too), Esc closes. Options: match case
   (Alt+C), whole word (Alt+W).

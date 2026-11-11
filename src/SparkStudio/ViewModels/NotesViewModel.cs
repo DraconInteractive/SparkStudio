@@ -104,6 +104,9 @@ public partial class NotesViewModel : ObservableObject
 {
     private readonly SparkClient _client;
     private readonly Settings _settings;
+
+    /// <summary>App settings (shared with the view for layout preferences such as the links panel).</summary>
+    public Settings Settings => _settings;
     private readonly LinkCache _links = new();
     private readonly Debouncer _autosave = new(TimeSpan.FromMilliseconds(1200));
     private readonly Debouncer _remoteRefresh = new(TimeSpan.FromMilliseconds(600));
