@@ -69,6 +69,11 @@ Use the server's `https://` address: over plain `http` the token travels unencry
   converted with **Convert to rich note**.
 - Markdown shortcuts while typing: `# ` headings, `- ` / `1. ` lists, `[] ` checklists, `> ` quotes,
   ```` ``` ```` + Enter for code, `---` + Enter for a divider, `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`.
+- Tables (Markdown pipe tables): the table button in the toolbar opens a size picker, or type a header line such as
+  `| Name | Value |` and press Enter. Tab / Shift+Tab move between cells (Tab in the last cell adds a row); Enter
+  moves down a row, adding one at the end, and Enter on an empty last row leaves the table. Right-click a cell to
+  insert or delete rows and columns, align a column (left/center/right) or delete the table. The first row is
+  always the header, and cells hold a single line, as in Markdown.
 - Links: type `[[` to pick a note, or type `[[Title]]` directly. `[[Title#Heading]]`, `[[Title|alias]]` and
   `[[folder/Title]]` work like Obsidian. **Ctrl+Click** follows a link; a link to a missing note offers to create it.
 - Link resolution covers the whole root project (including subprojects): title match, case-insensitive,

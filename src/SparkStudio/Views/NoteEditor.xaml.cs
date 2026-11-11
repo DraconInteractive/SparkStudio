@@ -37,7 +37,7 @@ public partial class NoteEditor : UserControl
     };
 
     private static readonly Regex MarkdownHint = new(
-        @"(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|- \[[ xX]\])|\*\*|\[\[|\]\(|~~", RegexOptions.Compiled);
+        @"(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|- \[[ xX]\])|\*\*|\[\[|\]\(|~~|(^|\n)\s*\|.*\|\s*\r?\n\s*\|?\s*:?-{3,}", RegexOptions.Compiled);
 
     private bool _loading, _editing, _syncingStyle;
     private string? _frontMatter;
@@ -54,6 +54,8 @@ public partial class NoteEditor : UserControl
         Box.AddHandler(ToggleButton.UncheckedEvent, new RoutedEventHandler(TaskToggled));
         DataObject.AddPastingHandler(Box, OnPaste);
         Box.IsInactiveSelectionHighlightEnabled = true; // keep find matches visible while the find bar has focus
+        Box.PreviewMouseRightButtonUp += Box_PreviewMouseRightButtonUp;
+        BuildTablePicker();
     }
 
     /// <summary>The underlying rich text box (for the find bar).</summary>
@@ -463,9 +465,10 @@ public partial class NoteEditor : UserControl
 
     private void Box_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (Box.IsReadOnly) return; // our shortcuts edit the document directly; leave navigation/copy to WPF
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         var mods = Keyboard.Modifiers;
+        if (key == Key.Apps || (key == Key.F10 && mods == ModifierKeys.Shift)) PrepareContextMenu(null);
+        if (Box.IsReadOnly) return; // our shortcuts edit the document directly; leave navigation/copy to WPF
 
         if (Suggest.IsOpen && SuggestList.Items.Count > 0)
         {
@@ -513,6 +516,13 @@ public partial class NoteEditor : UserControl
                     e.Handled = true;
                     return;
             }
+        }
+
+        if ((mods == ModifierKeys.None || mods == ModifierKeys.Shift) &&
+            NoteTables.CellAt(Box.CaretPosition) is { } cell && HandleTableKey(cell, key, mods == ModifierKeys.Shift))
+        {
+            e.Handled = true;
+            return;
         }
 
         if (key == Key.Enter && !mods.HasFlag(ModifierKeys.Shift))
@@ -613,8 +623,15 @@ public partial class NoteEditor : UserControl
         }
 
         var text = TextBefore(p, caret);
-        if (info.Kind == BlockKind.Paragraph && p.Parent is not ListItem && CaretAtEnd(p))
+        if (info.Kind == BlockKind.Paragraph && p.Parent is not ListItem and not TableCell && CaretAtEnd(p))
         {
+            if (NoteTables.ParseHeaderLine(text) is { } headers)
+            {
+                // "| Name | Value |" + Enter: a table with that header and an empty row to fill in.
+                e.Handled = true;
+                InsertTable(headers.Count, 1, headers, replace: p);
+                return;
+            }
             if (Regex.IsMatch(text.Trim(), @"^(-{3,}|\*{3,}|_{3,})$"))
             {
                 e.Handled = true;
@@ -994,6 +1011,260 @@ public partial class NoteEditor : UserControl
         });
     }
 
+    // ---------- Tables ----------
+
+    private const int PickerColumns = 8, PickerRows = 8;
+
+    private void BuildTablePicker()
+    {
+        TablePickerGrid.Columns = PickerColumns;
+        TablePickerGrid.Rows = PickerRows;
+        for (int r = 0; r < PickerRows; r++)
+        for (int c = 0; c < PickerColumns; c++)
+        {
+            var (row, col) = (r, c);
+            var cell = new Border
+            {
+                Width = 18,
+                Height = 18,
+                Margin = new Thickness(1),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+            };
+            cell.MouseEnter += (_, _) => HighlightPicker(row + 1, col + 1);
+            cell.MouseLeftButtonUp += (_, _) =>
+            {
+                TablePicker.IsOpen = false;
+                // The picker counts the header row; at least one body row to type in.
+                InsertTable(col + 1, Math.Max(1, row));
+                Box.Focus();
+            };
+            TablePickerGrid.Children.Add(cell);
+        }
+        HighlightPicker(0, 0);
+    }
+
+    private void HighlightPicker(int rows, int cols)
+    {
+        var on = (Brush)FindResource("AccentBrush");
+        var line = (Brush)FindResource("LineBrush");
+        var tint = on is SolidColorBrush accent
+            ? new SolidColorBrush(Color.FromArgb(0x33, accent.Color.R, accent.Color.G, accent.Color.B))
+            : Brushes.Transparent;
+        for (int i = 0; i < TablePickerGrid.Children.Count; i++)
+        {
+            var b = (Border)TablePickerGrid.Children[i];
+            bool lit = i / PickerColumns < rows && i % PickerColumns < cols;
+            b.BorderBrush = lit ? on : line;
+            b.Background = lit ? tint : Brushes.Transparent;
+        }
+        TablePickerLabel.Text = rows == 0 ? "Insert table" :
+            $"{cols} × {rows}  ({cols} column{(cols == 1 ? "" : "s")}, header + {Math.Max(1, rows - 1)} row{(Math.Max(1, rows - 1) == 1 ? "" : "s")})";
+    }
+
+    private void TablePickerGrid_MouseLeave(object sender, MouseEventArgs e) => HighlightPicker(0, 0);
+
+    /// <summary>
+    /// Inserts a table after the caret's block (or in place of <paramref name="replace"/>, or of an empty paragraph),
+    /// with a paragraph after it so there's somewhere to keep typing, and puts the caret in the first cell to fill.
+    /// </summary>
+    private void InsertTable(int columns, int bodyRows, IReadOnlyList<string>? headers = null, Paragraph? replace = null)
+    {
+        Block? anchor = replace ?? TopBlock(out _);
+        Edit(() =>
+        {
+            var table = NoteTables.Create(columns, bodyRows, headers);
+            if (anchor?.SiblingBlocks is { } siblings)
+            {
+                siblings.InsertAfter(anchor, table);
+                if (replace != null || anchor is Paragraph p && p.Parent is not TableCell && IsEmpty(p)) siblings.Remove(anchor);
+            }
+            else Box.Document.Blocks.Add(table);
+            if (table.NextBlock == null) table.SiblingBlocks!.InsertAfter(table, NewParagraph());
+            var first = headers != null ? NoteTables.CellAt(table, 1, 0) : NoteTables.CellAt(table, 0, 0);
+            Box.CaretPosition = NoteTables.CaretIn(first!);
+        });
+        SyncBlockStyle();
+    }
+
+    /// <summary>Tab / Shift+Tab move between cells, Enter moves down (adding a row at the end); cells stay single-line.</summary>
+    private bool HandleTableKey(TableCell cell, Key key, bool shift)
+    {
+        var p = NoteTables.CellParagraph(cell);
+        switch (key)
+        {
+            case Key.Tab:
+                FlushPendingInput();
+                MoveToCell(cell, shift ? -1 : 1);
+                return true;
+            case Key.Enter:
+                FlushPendingInput();
+                if (!shift) EnterInTable(cell);
+                return true; // Markdown cells can't hold line breaks
+            case Key.Back when !shift && Box.Selection.IsEmpty:
+                FlushPendingInput();
+                return Box.CaretPosition.CompareTo(p.ContentStart.GetInsertionPosition(LogicalDirection.Forward)) <= 0;
+            case Key.Delete when !shift && Box.Selection.IsEmpty:
+                FlushPendingInput();
+                return CaretAtEnd(p);
+            default:
+                return false;
+        }
+    }
+
+    private void MoveToCell(TableCell cell, int step)
+    {
+        var table = NoteTables.TableOf(cell);
+        var (r, c) = NoteTables.IndexOf(cell);
+        int cols = NoteTables.ColumnCount(table), rows = NoteTables.Rows(table).Count;
+        int index = r * cols + c + step;
+        if (index < 0) return;
+        if (index >= rows * cols)
+        {
+            // Tab in the last cell adds a row.
+            Edit(() =>
+            {
+                var row = NoteTables.InsertRow(table, rows);
+                Box.CaretPosition = NoteTables.CaretIn(row.Cells[0]);
+            });
+            return;
+        }
+        if (NoteTables.CellAt(table, index / cols, index % cols) is { } target)
+            Box.Selection.Select(NoteTables.CellParagraph(target).ContentStart.GetInsertionPosition(LogicalDirection.Forward),
+                NoteTables.CaretIn(target));
+    }
+
+    private static bool RowIsEmpty(TableRow row) =>
+        row.Cells.All(c => new TextRange(c.ContentStart, c.ContentEnd).Text.Trim().Length == 0);
+
+    private void EnterInTable(TableCell cell)
+    {
+        var table = NoteTables.TableOf(cell);
+        var (r, c) = NoteTables.IndexOf(cell);
+        var rows = NoteTables.Rows(table);
+        if (r < rows.Count - 1)
+        {
+            var below = NoteTables.CellAt(table, r + 1, c) ?? rows[r + 1].Cells[0];
+            Box.CaretPosition = NoteTables.CaretIn(below);
+            return;
+        }
+        Edit(() =>
+        {
+            if (r > 0 && RowIsEmpty(rows[r]))
+            {
+                // Enter on an empty last row leaves the table (like an empty list item).
+                NoteTables.DeleteRow(table, r);
+                Box.CaretPosition = ParagraphAfter(table).ContentStart;
+            }
+            else
+            {
+                var row = NoteTables.InsertRow(table, rows.Count);
+                Box.CaretPosition = NoteTables.CaretIn(row.Cells[Math.Min(c, row.Cells.Count - 1)]);
+            }
+        });
+    }
+
+    /// <summary>The paragraph after a table, created if the table is the last block.</summary>
+    private static Paragraph ParagraphAfter(Table table)
+    {
+        if (table.NextBlock is Paragraph next) return next;
+        var p = NewParagraph();
+        table.SiblingBlocks!.InsertAfter(table, p);
+        return p;
+    }
+
+    /// <summary>
+    /// Right-click inside a table gets a menu with table commands (plus cut/copy/paste and spelling suggestions);
+    /// elsewhere the RichTextBox's own menu is used. Runs before the menu opens (mouse button up / menu key).
+    /// </summary>
+    private void PrepareContextMenu(TextPointer? at)
+    {
+        var cell = Box.IsReadOnly ? null : NoteTables.CellAt(at ?? Box.CaretPosition);
+        if (cell == null)
+        {
+            Box.ClearValue(ContextMenuProperty);
+            return;
+        }
+        if (at != null && !Box.Selection.Contains(at)) Box.CaretPosition = at;
+
+        var menu = new ContextMenu();
+        if (Box.GetSpellingError(Box.CaretPosition) is { } spelling)
+        {
+            var suggestions = spelling.Suggestions.Take(5).ToList();
+            foreach (var s in suggestions)
+            {
+                var mi = new MenuItem { Header = s, FontWeight = FontWeights.SemiBold, Command = EditingCommands.CorrectSpellingError, CommandParameter = s, CommandTarget = Box };
+                menu.Items.Add(mi);
+            }
+            if (suggestions.Count == 0) menu.Items.Add(new MenuItem { Header = "(no spelling suggestions)", IsEnabled = false });
+            menu.Items.Add(new MenuItem { Header = "Ignore all", Command = EditingCommands.IgnoreSpellingError, CommandTarget = Box });
+            menu.Items.Add(new Separator());
+        }
+        menu.Items.Add(new MenuItem { Command = ApplicationCommands.Cut, CommandTarget = Box });
+        menu.Items.Add(new MenuItem { Command = ApplicationCommands.Copy, CommandTarget = Box });
+        menu.Items.Add(new MenuItem { Command = ApplicationCommands.Paste, CommandTarget = Box });
+
+        {
+            var table = NoteTables.TableOf(cell);
+            var (r, c) = NoteTables.IndexOf(cell);
+            int cols = NoteTables.ColumnCount(table);
+
+            MenuItem Item(string header, Action act, bool enabled = true)
+            {
+                var mi = new MenuItem { Header = header, IsEnabled = enabled };
+                mi.Click += (_, _) =>
+                {
+                    Edit(act);
+                    Changed?.Invoke();
+                    Box.Focus();
+                };
+                return mi;
+            }
+            void Focus(int row, int col)
+            {
+                if (NoteTables.CellAt(table, row, col) is { } target) Box.CaretPosition = NoteTables.CaretIn(target);
+            }
+
+            menu.Items.Add(new Separator());
+            menu.Items.Add(Item("Insert row above", () => { NoteTables.InsertRow(table, r); Focus(r, c); }, r > 0));
+            menu.Items.Add(Item("Insert row below", () => { NoteTables.InsertRow(table, r + 1); Focus(r + 1, c); }));
+            menu.Items.Add(Item("Insert column left", () => { NoteTables.InsertColumn(table, c); Focus(r, c); }));
+            menu.Items.Add(Item("Insert column right", () => { NoteTables.InsertColumn(table, c + 1); Focus(r, c + 1); }));
+
+            var align = new MenuItem { Header = "Align column" };
+            var current = NoteTables.AlignmentOf(table, c);
+            foreach (var (name, value) in new[] { ("Left", TextAlignment.Left), ("Center", TextAlignment.Center), ("Right", TextAlignment.Right) })
+            {
+                var mi = Item(name, () => NoteTables.SetAlignment(table, c, value));
+                mi.IsChecked = current == value;
+                align.Items.Add(mi);
+            }
+            menu.Items.Add(align);
+
+            menu.Items.Add(new Separator());
+            menu.Items.Add(Item("Delete row", () =>
+            {
+                NoteTables.DeleteRow(table, r);
+                Focus(Math.Min(r, NoteTables.Rows(table).Count - 1), c);
+            }, r > 0));
+            menu.Items.Add(Item("Delete column", () =>
+            {
+                NoteTables.DeleteColumn(table, c);
+                Focus(r, Math.Min(c, cols - 2));
+            }, cols > 1));
+            menu.Items.Add(Item("Delete table", () =>
+            {
+                var after = ParagraphAfter(table);
+                table.SiblingBlocks!.Remove(table);
+                Box.CaretPosition = after.ContentStart;
+            }));
+        }
+        Box.ContextMenu = menu;
+    }
+
+    private void Box_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e) =>
+        PrepareContextMenu(Box.GetPositionFromPoint(e.GetPosition(Box), true));
+
     // ---------- Paste ----------
 
     private void OnPaste(object sender, DataObjectPastingEventArgs e)
@@ -1052,4 +1323,9 @@ public partial class NoteEditor : UserControl
     private void Task_Click(object sender, RoutedEventArgs e) { ToggleTask(); Box.Focus(); }
     private void Quote_Click(object sender, RoutedEventArgs e) { Edit(ToggleQuote); Box.Focus(); }
     private void Rule_Click(object sender, RoutedEventArgs e) { InsertRule(); Box.Focus(); }
+    private void Table_Click(object sender, RoutedEventArgs e)
+    {
+        HighlightPicker(0, 0);
+        TablePicker.IsOpen = true;
+    }
 }

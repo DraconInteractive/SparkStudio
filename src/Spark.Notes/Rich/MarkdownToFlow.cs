@@ -149,45 +149,26 @@ public sealed class MarkdownToFlow
 
     private WpfTable ConvertTable(MdTable t)
     {
-        var table = new WpfTable
-        {
-            Tag = new BlockInfo(BlockKind.Table),
-            CellSpacing = 0,
-            BorderBrush = NoteDocument.RuleBrush,
-            BorderThickness = new Thickness(1, 1, 0, 0),
-            Margin = new Thickness(0, 0, 0, 10),
-        };
         int cols = t.ColumnDefinitions.Count;
         foreach (var row in t.OfType<MdRow>()) cols = Math.Max(cols, row.Count);
-        for (int i = 0; i < cols; i++) table.Columns.Add(new TableColumn());
-        var group = new TableRowGroup();
-        table.RowGroups.Add(group);
+        var table = NoteTables.NewShell(cols);
+        var group = table.RowGroups[0];
 
         foreach (var row in t.OfType<MdRow>())
         {
             var tr = new System.Windows.Documents.TableRow();
             for (int i = 0; i < cols; i++)
             {
-                var p = new Paragraph { Margin = new Thickness(0) };
-                NoteDocument.Apply(p, new BlockInfo(BlockKind.Paragraph));
-                p.Margin = new Thickness(0);
+                var p = new Paragraph();
                 if (i < row.Count && row[i] is MdCell cell)
                     foreach (var pb in cell.OfType<ParagraphBlock>()) AddInlines(pb.Inline, p.Inlines);
-                if (row.IsHeader) p.FontWeight = FontWeights.SemiBold;
                 var align = i < t.ColumnDefinitions.Count ? t.ColumnDefinitions[i].Alignment : null;
-                p.TextAlignment = align switch
+                tr.Cells.Add(NoteTables.NewCell(row.IsHeader, align switch
                 {
                     TableColumnAlign.Center => TextAlignment.Center,
                     TableColumnAlign.Right => TextAlignment.Right,
                     _ => TextAlignment.Left,
-                };
-                tr.Cells.Add(new System.Windows.Documents.TableCell(p)
-                {
-                    BorderBrush = NoteDocument.RuleBrush,
-                    BorderThickness = new Thickness(0, 0, 1, 1),
-                    Padding = new Thickness(8, 4, 8, 4),
-                    Background = row.IsHeader ? NoteDocument.CodeBackground : null,
-                });
+                }, p));
             }
             group.Rows.Add(tr);
         }
