@@ -197,7 +197,7 @@ $dirty = (git -C $root status --porcelain 2>$null) -ne $null
 Write-Host "Artifact:  $exe ($sizeMb MB, built $($exeInfo.LastWriteTime))"
 if ($commit) { Write-Host "Commit:    $commit$(if ($dirty) { ' (+ uncommitted changes)' })" }
 $newestSource = Get-ChildItem (Join-Path $root 'src') -Recurse -File -Include *.cs, *.xaml, *.csproj, *.pubxml |
-    Where-Object { $_.FullName -notmatch '[\/](bin|obj)[\/]' } |
+    Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($newestSource -and $newestSource.LastWriteTime -gt $exeInfo.LastWriteTime) {
     Write-Host "WARNING: $($newestSource.Name) changed after this build. Use -Build to publish the current code." -ForegroundColor Yellow
