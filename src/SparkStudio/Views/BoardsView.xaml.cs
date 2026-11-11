@@ -10,6 +10,16 @@ public partial class BoardsView : UserControl
     private Point _dragStart;
     private TaskCard? _dragCard;
 
+    /// <summary>Opens the sort menu under the button (left click, like a dropdown).</summary>
+    private void SortButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { ContextMenu: { } menu } button) return;
+        menu.PlacementTarget = button;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.DataContext = button.DataContext;
+        menu.IsOpen = true;
+    }
+
     public BoardsView() => InitializeComponent();
 
     private BoardsViewModel? Vm => DataContext as BoardsViewModel;

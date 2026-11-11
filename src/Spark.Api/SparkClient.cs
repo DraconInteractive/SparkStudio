@@ -47,18 +47,59 @@ public sealed class SparkClient : IDisposable
 
     // ---------- Server ----------
 
+    /// <summary>API contract version. Requires discovery.read in token mode.</summary>
     public async Task<string> GetApiVersionAsync(CancellationToken ct = default)
     {
         var node = await SendAsync<JsonObject>(HttpMethod.Get, "version", null, ct);
         return node?["api_version"]?.GetValue<string>() ?? "";
     }
 
-    /// <summary>The TCP notification port advertised by the server's /api contract, if any.</summary>
-    public async Task<int?> GetNotificationPortAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Checks the bearer token against <paramref name="deviceId"/> and returns its permissions. Needs no permission
+    /// itself, so it is the first call to make. Throws 401 for a missing/invalid/revoked token and 403
+    /// (device_identity_mismatch) when the token belongs to another device. Open-mode servers return Authenticated=false.
+    /// </summary>
+    public async Task<AuthInfo> VerifyAsync(string deviceId, CancellationToken ct = default) =>
+        (await SendAsync<AuthInfo>(HttpMethod.Post, "auth/verify", new { device_id = deviceId }, ct))!;
+
+    private ServerContract? _contract;
+    private bool _contractFetched;
+
+    /// <summary>
+    /// The parts of /api the client uses, or null when the contract can't be read (in token mode /api needs
+    /// discovery.read). Cached for the lifetime of this client.
+    /// </summary>
+    public async Task<ServerContract?> GetContractAsync(CancellationToken ct = default)
     {
-        var node = await SendAsync<JsonObject>(HttpMethod.Get, "api", null, ct);
-        return node?["notifications"]?["port"]?.GetValue<int>();
+        if (_contractFetched) return _contract;
+        try
+        {
+            var api = await SendAsync<JsonObject>(HttpMethod.Get, "api", null, ct);
+            if (api != null)
+            {
+                var n = api["notifications"] as JsonObject;
+                var patch = api["endpoints"]?.AsArray().OfType<JsonObject>().FirstOrDefault(e =>
+                    e["method"]?.ToString() == "PATCH" && e["path"]?.ToString() == "/files/{id}");
+                _contract = new ServerContract(
+                    ApiVersion: api["api_version"]?.ToString() ?? "",
+                    Authentication: api["authentication"]?.ToString() ?? "none",
+                    NotificationTransport: n?["transport"]?.ToString() ?? "tcp",
+                    NotificationHost: n?["host"]?.ToString(),
+                    NotificationPort: n?["port"] is JsonValue pv && pv.TryGetValue<int>(out var port) ? port : null,
+                    SupportsFileRename: patch?["input"]?["body"] is JsonObject body && body.ContainsKey("name"),
+                    SupportsTaskSeverity: api["endpoints"]?.AsArray().OfType<JsonObject>().Any(e =>
+                        e["path"]?.ToString() == "/projects/{project_id}/boards/{board_id}/tasks/{task_id}"
+                        && e["output"]?["body"] is JsonObject tb && tb.ContainsKey("severity")) == true);
+            }
+        }
+        catch (SparkApiException ex) when (ex.Status is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) { }
+        _contractFetched = true;
+        return _contract;
     }
+
+    /// <summary>The TCP notification port advertised by the server's /api contract, if readable.</summary>
+    public async Task<int?> GetNotificationPortAsync(CancellationToken ct = default) =>
+        (await GetContractAsync(ct))?.NotificationPort;
 
     // ---------- Projects ----------
 
@@ -114,17 +155,27 @@ public sealed class SparkClient : IDisposable
     public Task DeleteColumnAsync(string projectId, string boardId, string columnId, CancellationToken ct = default) =>
         SendAsync<object>(HttpMethod.Delete, $"projects/{projectId}/boards/{boardId}/columns/{columnId}", null, ct);
 
-    public Task<BoardTask?> CreateTaskAsync(string projectId, string boardId, string columnId, string name, string description, CancellationToken ct = default) =>
-        SendAsync<BoardTask>(HttpMethod.Post, $"projects/{projectId}/boards/{boardId}/columns/{columnId}/tasks", new { name, description }, ct);
+    /// <summary>
+    /// Creates a task. <paramref name="severity"/> is only sent when given (servers before API 1.48 reject it
+    /// as an unknown field); the server defaults it to Normal.
+    /// </summary>
+    public Task<BoardTask?> CreateTaskAsync(string projectId, string boardId, string columnId, string name, string description,
+        string? severity = null, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, string> { ["name"] = name, ["description"] = description };
+        if (severity != null) body["severity"] = severity;
+        return SendAsync<BoardTask>(HttpMethod.Post, $"projects/{projectId}/boards/{boardId}/columns/{columnId}/tasks", body, ct);
+    }
 
     /// <summary>Partially updates a task; null arguments are left unchanged.</summary>
     public Task<BoardTask?> UpdateTaskAsync(string projectId, string boardId, string taskId,
-        string? name = null, string? description = null, string? columnId = null, CancellationToken ct = default)
+        string? name = null, string? description = null, string? columnId = null, string? severity = null, CancellationToken ct = default)
     {
         var body = new Dictionary<string, string>();
         if (name != null) body["name"] = name;
         if (description != null) body["description"] = description;
         if (columnId != null) body["column_id"] = columnId;
+        if (severity != null) body["severity"] = severity;
         return SendAsync<BoardTask>(HttpMethod.Patch, $"projects/{projectId}/boards/{boardId}/tasks/{taskId}", body, ct);
     }
 
@@ -170,18 +221,12 @@ public sealed class SparkClient : IDisposable
     public async Task<SparkFile> RenameFileAsync(string id, string name, CancellationToken ct = default) =>
         (await SendAsync<SparkFile>(HttpMethod.Patch, $"files/{id}", new { name }, ct))!;
 
-    private bool? _supportsRename;
-
-    /// <summary>Whether the server's /api contract says PATCH /files/{id} accepts a new name.</summary>
-    public async Task<bool> SupportsFileRenameAsync(CancellationToken ct = default)
-    {
-        if (_supportsRename is { } known) return known;
-        var api = await SendAsync<JsonObject>(HttpMethod.Get, "api", null, ct);
-        var patch = api?["endpoints"]?.AsArray().OfType<JsonObject>().FirstOrDefault(e =>
-            e["method"]?.ToString() == "PATCH" && e["path"]?.ToString() == "/files/{id}");
-        _supportsRename = patch?["input"]?["body"] is JsonObject body && body.ContainsKey("name");
-        return _supportsRename.Value;
-    }
+    /// <summary>
+    /// Whether PATCH /files/{id} accepts a new name, per the /api contract. Null when the contract can't be
+    /// read (token without discovery.read); callers should then try the rename and fall back on 400.
+    /// </summary>
+    public async Task<bool?> SupportsFileRenameAsync(CancellationToken ct = default) =>
+        (await GetContractAsync(ct))?.SupportsFileRename;
 
     public Task DeleteFileAsync(string id, CancellationToken ct = default) =>
         SendAsync<object>(HttpMethod.Delete, $"files/{id}", null, ct);

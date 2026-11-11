@@ -44,12 +44,15 @@ public static class NoteOperations
         await links.RefreshAsync(client, before.Where(IsLinkScannable).ToList(), ct);
         var referrers = links.BacklinksTo(file, oldIndex).Select(b => b.Source).DistinctBy(f => f.Id).ToList();
 
-        SparkFile created;
-        if (await client.SupportsFileRenameAsync(ct))
+        SparkFile? created = null;
+        var native = await client.SupportsFileRenameAsync(ct);
+        if (native != false)
         {
-            created = await client.RenameFileAsync(file.Id, newName, ct);
+            // Unknown support (contract unreadable without discovery.read): try it; old servers reject the field with 400.
+            try { created = await client.RenameFileAsync(file.Id, newName, ct); }
+            catch (SparkApiException ex) when (native == null && ex.Status == System.Net.HttpStatusCode.BadRequest) { }
         }
-        else
+        if (created == null)
         {
             var bytes = await client.GetBytesAsync(file.Id, ct);
             created = await client.UploadAsync(file.DriveLetter, file.Directory, newName, bytes, ct);

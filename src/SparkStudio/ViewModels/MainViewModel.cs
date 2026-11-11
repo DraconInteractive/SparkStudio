@@ -19,6 +19,9 @@ public partial class ProjectNode : ObservableObject
     public ObservableCollection<ProjectNode> Children { get; } = new();
 
     public ProjectNode Root => Parent?.Root ?? this;
+
+    /// <summary>"SPARK / SPARK Watch": the project's position in the tree.</summary>
+    public string PathDisplay => Parent == null ? Project.Name : Parent.PathDisplay + " / " + Project.Name;
 }
 
 public partial class MainViewModel : ObservableObject, IAsyncDisposable
@@ -31,17 +34,18 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     public MainViewModel()
     {
         _serverUrl = _settings.ServerUrl;
-        _token = _settings.Token;
     }
 
-    public static string DeviceId { get; } =
-        "spark-studio-" + Regex.Replace(Environment.MachineName.ToLowerInvariant(), "[^a-z0-9_-]", "-")[..Math.Min(40, Environment.MachineName.Length)];
+    /// <summary>The device ID this app acts as on the connected server (from its connection profile).</summary>
+    public string DeviceId { get; private set; } = Settings.DefaultDeviceId;
 
     public SparkClient? Client { get; private set; }
     public Settings Settings => _settings;
 
     [ObservableProperty] private string _serverUrl;
-    [ObservableProperty] private string? _token;
+    /// <summary>Details shown as the status tooltip: identity, permissions, warnings.</summary>
+    [ObservableProperty] private string _statusDetails = "";
+    [ObservableProperty] private bool _hasWarning;
     [ObservableProperty] private bool _isConnected;
     [ObservableProperty] private bool _isLive;
     [ObservableProperty] private string _status = "Not connected";
@@ -49,6 +53,56 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty] private ProjectWorkspace? _workspace;
 
     public ObservableCollection<ProjectNode> RootProjects { get; } = new();
+
+    // ---------- Project switcher (top-bar dropdown) ----------
+
+    [ObservableProperty] private bool _isProjectPickerOpen;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsFilteringProjects))]
+    private string _projectFilter = "";
+
+    public bool IsFilteringProjects => !string.IsNullOrWhiteSpace(ProjectFilter);
+    public ObservableCollection<ProjectNode> FilteredProjects { get; } = new();
+
+    partial void OnProjectFilterChanged(string value)
+    {
+        FilteredProjects.Clear();
+        var q = value.Trim();
+        if (q.Length == 0) return;
+        foreach (var n in AllNodes()
+                     .Where(n => n.PathDisplay.Contains(q, StringComparison.OrdinalIgnoreCase))
+                     .OrderByDescending(n => n.Project.Name.StartsWith(q, StringComparison.OrdinalIgnoreCase))
+                     .ThenBy(n => n.PathDisplay, StringComparer.OrdinalIgnoreCase))
+            FilteredProjects.Add(n);
+    }
+
+    partial void OnIsProjectPickerOpenChanged(bool value)
+    {
+        if (!value) ProjectFilter = "";
+    }
+
+    [RelayCommand]
+    private void ToggleProjectPicker() => IsProjectPickerOpen = !IsProjectPickerOpen;
+
+    /// <summary>Switches to a project chosen in the dropdown and closes it.</summary>
+    public void SelectProject(ProjectNode node)
+    {
+        foreach (var n in AllNodes()) n.IsSelected = n == node;
+        for (var p = node.Parent; p != null; p = p.Parent) p.IsExpanded = true;
+        SelectedNode = node;
+        IsProjectPickerOpen = false;
+    }
+
+    [RelayCommand]
+    private async Task EditConnectionAsync()
+    {
+        var result = Views.ConnectionDialog.Show(Ui.Owner, _settings, ServerUrl);
+        if (result == null) return;
+        _settings.SaveProfile(result.Url, result.Profile);
+        ServerUrl = result.Url;
+        await ConnectAsync();
+    }
 
     [RelayCommand]
     public async Task ConnectAsync()
@@ -59,37 +113,98 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
         if (_live != null) await _live.DisposeAsync();
+        _live = null;
+        IsLive = false;
         Client?.Dispose();
         _workspaces.Clear();
         Workspace = null;
+        RootProjects.Clear();
+        SelectedNode = null;
+        HasWarning = false;
+        StatusDetails = "";
 
-        Client = new SparkClient(uri, Token);
-        Status = "Connecting…";
-        try
+        var profile = _settings.ProfileFor(ServerUrl);
+        var token = profile.GetToken();
+        DeviceId = profile.DeviceId;
+        if (profile.HasToken && token == null)
         {
-            var version = await Client.GetApiVersionAsync();
-            IsConnected = true;
-            Status = $"Connected · API {version}";
-            _settings.ServerUrl = ServerUrl.Trim();
-            _settings.Token = string.IsNullOrWhiteSpace(Token) ? null : Token;
-            _settings.Save();
-        }
-        catch (Exception ex)
-        {
-            IsConnected = false;
-            Status = "Connection failed: " + ex.Message;
+            Fail("Saved token can't be decrypted",
+                "The token was saved under a different Windows account. Re-enter it in connection settings (key button).");
             return;
         }
 
-        await RefreshProjectsAsync();
+        Client = new SparkClient(uri, token);
+        Status = "Connecting…";
 
-        int port = _settings.NotificationPort;
-        try { port = await Client.GetNotificationPortAsync() ?? port; } catch (Exception) { }
-        _live = new NotificationClient(uri.Host, port, DeviceId);
+        // 1. Who are we? /auth/verify needs no permission, so it works before anything else.
+        var check = await ConnectionCheck.RunAsync(Client, DeviceId, token != null);
+        if (!check.Ok)
+        {
+            Fail(check.Headline, check.Details);
+            if (check.Headline == "This server requires a device token") _ = EditConnectionAsync();
+            return;
+        }
+        var tokenMode = check.Auth?.Authenticated == true;
+        bool Has(string permission) => !tokenMode || check.Auth!.Permissions.Contains(permission);
+
+        // 2. Optional: the API contract (needs discovery.read in token mode).
+        var contract = await Client.GetContractAsync();
+
+        IsConnected = true;
+        _settings.ServerUrl = ServerUrl.Trim();
+        _settings.Save();
+
+        var who = tokenMode ? $"as {DeviceId}" : "(open mode)";
+        var version = contract != null ? $" · API {contract.ApiVersion}" : "";
+        Status = $"Connected {who}{version}";
+        var details = check.Details;
+        if (token != null && ConnectionCheck.IsPlaintext(uri))
+            details += "\n\nWarning: this connection is plain http, so the token is sent unencrypted.";
+        HasWarning = check.MissingPermissions.Count > 0 || (token != null && ConnectionCheck.IsPlaintext(uri));
+        if (HasWarning) Status += " · ⚠";
+        StatusDetails = details;
+
+        if (Has("projects.read")) await RefreshProjectsAsync();
+        if (SelectedNode == null && RootProjects.Count > 0) IsProjectPickerOpen = true;
+
+        // 3. Live updates over TCP (token in the hello; TLS when the contract says tcp+tls).
+        if (!Has("notifications.read")) return;
+        var options = new NotificationOptions(
+            Host: contract?.NotificationHost ?? uri.Host,
+            Port: contract?.NotificationPort ?? _settings.NotificationPort,
+            DeviceId: DeviceId,
+            Token: token,
+            UseTls: contract?.NotificationsUseTls ?? false);
+        if (token != null && !options.UseTls && uri.Scheme == Uri.UriSchemeHttps && contract == null)
+        {
+            // Without the contract we can't tell whether TCP is TLS; don't send the token in clear text.
+            StatusDetails += "\n\nLive updates are off: grant discovery.read so the app can learn the notification transport.";
+            return;
+        }
+        _live = new NotificationClient(options);
         _live.ConnectionChanged += up => Ui.Post(() => IsLive = up);
         _live.Notified += n => Ui.Post(() => OnNotification(n));
         _live.ResyncRequired += () => Ui.Post(OnResync);
+        _live.Rejected += code => Ui.Post(() =>
+        {
+            HasWarning = true;
+            if (!Status.EndsWith("⚠")) Status += " · ⚠";
+            StatusDetails += code switch
+            {
+                "unauthorized" => "\n\nLive updates stopped: the token was rejected or revoked. Update it in connection settings.",
+                "forbidden" => "\n\nLive updates stopped: this device lacks notifications.read or the device ID doesn't match the token.",
+                _ => $"\n\nLive updates stopped: the server rejected the connection ({code}).",
+            };
+        });
         _live.Start();
+    }
+
+    private void Fail(string headline, string details)
+    {
+        IsConnected = false;
+        HasWarning = true;
+        Status = headline;
+        StatusDetails = details;
     }
 
     [RelayCommand]
@@ -157,6 +272,7 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     private async Task NewProjectAsync(ProjectNode? parent)
     {
         if (Client == null) return;
+        IsProjectPickerOpen = false;
         var name = Ui.Prompt(parent == null ? "New project" : $"New subproject of {parent.Project.Name}", "Name");
         if (string.IsNullOrWhiteSpace(name)) return;
         await Ui.Try("Create project", async () =>
@@ -229,7 +345,7 @@ public partial class ProjectWorkspace : ObservableObject
         _project = project;
         _rootProject = root;
         Notes = new NotesViewModel(client, project, root, settings);
-        Boards = new BoardsViewModel(client, project);
+        Boards = new BoardsViewModel(client, project, settings);
     }
 
     [ObservableProperty] private Project _project;

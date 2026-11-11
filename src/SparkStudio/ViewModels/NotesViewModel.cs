@@ -586,7 +586,10 @@ public partial class NotesViewModel : ObservableObject
         await RenameAsync(doc.File, newName);
     }
 
-    /// <summary>Renames by copy + delete (SPARK has no rename) and updates [[links]] that pointed at the file.</summary>
+    /// <summary>
+    /// Renames a file (native PATCH rename on API 1.45+, otherwise copy + delete) and updates [[links]] that
+    /// pointed at it. Also used by "Convert to rich note" (.txt -> .md).
+    /// </summary>
     private async Task RenameAsync(SparkFile file, string newName)
     {
         var wasOpen = Current?.File.Id == file.Id;

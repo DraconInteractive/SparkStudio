@@ -7,8 +7,37 @@ stored as Markdown files on the SPARK server, with Obsidian-style `[[links]]` be
 dotnet run --project src/SparkStudio
 ```
 
+### Distributable build
+
+```
+dotnet publish src/SparkStudio -p:PublishProfile=win-x64
+```
+
+Produces `artifacts/publish/SparkStudio.exe`: a single self-contained file (~65 MB, Windows x64) that runs
+on any Windows 10/11 PC without installing .NET. Copy it anywhere and run it; settings stay per user in
+`%APPDATA%\SparkStudio`.
+
 The app connects to the server URL in the top bar (saved to `%APPDATA%\SparkStudio\settings.json`).
-Live updates come from the server's TCP notification port, which the app reads from `/api`.
+Live updates come from the server's TCP notification stream, whose port/transport the app reads from `/api`.
+
+## Authenticated servers
+
+Each server URL has its own **device ID** and **device token** (key button in the top bar). Ask an
+administrator to issue a device credential (`/admin/credentials`) for the device ID you'll use; the token is
+stored encrypted with Windows DPAPI for your Windows account. **Test** runs `/auth/verify` and lists the
+token's permissions, flagging any the app needs but doesn't have:
+
+| Permission | Used for |
+| --- | --- |
+| `projects.read` / `projects.write` | list projects / create projects, edit descriptions |
+| `files.read` / `files.write` | read notes / save, create, rename, delete |
+| `boards.read` / `boards.write` | view / edit boards |
+| `notifications.read` | live updates (token sent in the TCP hello; `tcp+tls` honoured) |
+| `discovery.read` | `/api` contract: version, native rename detection, notification transport |
+
+REST calls send `Authorization: Bearer <token>`. If the token is rejected or revoked, live updates stop
+(rather than retrying) and the status turns amber; hover it for details, click it to update credentials.
+Use the server's `https://` address: over plain `http` the token travels unencrypted.
 
 ## Notes
 
@@ -30,7 +59,16 @@ Live updates come from the server's TCP notification port, which the app reads f
 ## Boards
 
 Create/rename/delete boards and columns, add tasks inline, double-click a card to edit it, and drag cards
-between columns. (The API has no task ordering, so tasks stay in creation order within a column.)
+between columns.
+
+**Sort** (board toolbar) orders the cards within every column by date created, name or severity, ascending or
+descending; ties fall back to oldest first. The choice is remembered across sessions and applies to all
+boards. Sorting is client-side (the API has no task ordering), so it doesn't change anything on the server.
+
+**Severity** (servers with API 1.48+): each task has a severity — Very Low, Low, Normal (default), High,
+Very High or Urgent. Cards show a coloured badge for anything other than Normal, and High and above get a
+coloured edge. Set it from the card's right-click **Severity** menu or in the edit dialog. On older servers
+the severity controls are hidden and requests never include the field.
 
 ## Layout
 

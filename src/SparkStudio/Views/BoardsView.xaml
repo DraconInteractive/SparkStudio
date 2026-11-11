@@ -4,6 +4,36 @@
              x:Name="Root">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <!-- Severity badge; DataContext is the severity string. -->
+        <Style x:Key="SeverityPill" TargetType="Border">
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="7,1"/>
+            <Setter Property="Background" Value="#F0EEF4"/>
+            <Setter Property="TextElement.Foreground" Value="#6B6875"/>
+            <Setter Property="TextElement.FontSize" Value="11"/>
+            <Setter Property="TextElement.FontWeight" Value="SemiBold"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding}" Value="Very Low"><Setter Property="Background" Value="#EEF0F3"/><Setter Property="TextElement.Foreground" Value="#5E6773"/></DataTrigger>
+                <DataTrigger Binding="{Binding}" Value="Low"><Setter Property="Background" Value="#E3F0FB"/><Setter Property="TextElement.Foreground" Value="#1F6FB2"/></DataTrigger>
+                <DataTrigger Binding="{Binding}" Value="Normal"><Setter Property="Background" Value="#F0EEF4"/><Setter Property="TextElement.Foreground" Value="#6B6875"/></DataTrigger>
+                <DataTrigger Binding="{Binding}" Value="High"><Setter Property="Background" Value="#FFF1D6"/><Setter Property="TextElement.Foreground" Value="#9A5B00"/></DataTrigger>
+                <DataTrigger Binding="{Binding}" Value="Very High"><Setter Property="Background" Value="#FFE4D4"/><Setter Property="TextElement.Foreground" Value="#B8430A"/></DataTrigger>
+                <DataTrigger Binding="{Binding}" Value="Urgent"><Setter Property="Background" Value="#C4314B"/><Setter Property="TextElement.Foreground" Value="#FFFFFF"/></DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Card frame; higher severities get a coloured left edge so they stand out when scanning a column. -->
+        <Style x:Key="CardFrame" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource EditorBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Severity}" Value="High"><Setter Property="BorderBrush" Value="#E8A33A"/><Setter Property="BorderThickness" Value="3,1,1,1"/></DataTrigger>
+                <DataTrigger Binding="{Binding Severity}" Value="Very High"><Setter Property="BorderBrush" Value="#E8590C"/><Setter Property="BorderThickness" Value="3,1,1,1"/></DataTrigger>
+                <DataTrigger Binding="{Binding Severity}" Value="Urgent"><Setter Property="BorderBrush" Value="#C4314B"/><Setter Property="BorderThickness" Value="3,1,1,1"/></DataTrigger>
+            </Style.Triggers>
+        </Style>
     </UserControl.Resources>
     <DockPanel>
         <!-- Board toolbar -->
@@ -15,6 +45,28 @@
                 <Button Style="{StaticResource IconButton}" Content="&#xE74D;" ToolTip="Delete board" Command="{Binding DeleteBoardCommand}"/>
                 <Button Style="{StaticResource IconButton}" Content="&#xE72C;" ToolTip="Refresh" Command="{Binding RefreshCommand}"/>
                 <Button Content="+ New board" Style="{StaticResource FlatButton}" Command="{Binding NewBoardCommand}" Margin="8,0,0,0"/>
+                <Border Width="1" Background="{StaticResource LineBrush}" Margin="10,4,2,4"/>
+                <Button x:Name="SortButton" Style="{StaticResource FlatButton}" Margin="8,0,0,0" Click="SortButton_Click"
+                        ToolTip="Sort cards within each column">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE8CB;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBlock Text="Sort: " Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding SortLabel}" VerticalAlignment="Center"/>
+                        <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9" VerticalAlignment="Center" Margin="6,1,0,0"/>
+                    </StackPanel>
+                    <Button.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Sort by" IsEnabled="False"/>
+                            <MenuItem Header="Date created" IsChecked="{Binding IsSortCreated, Mode=OneWay}" Command="{Binding SortByCommand}" CommandParameter="Created"/>
+                            <MenuItem Header="Name" IsChecked="{Binding IsSortName, Mode=OneWay}" Command="{Binding SortByCommand}" CommandParameter="Name"/>
+                            <MenuItem Header="Severity" IsChecked="{Binding IsSortSeverity, Mode=OneWay}" Command="{Binding SortByCommand}" CommandParameter="Severity"
+                                      Visibility="{Binding SupportsSeverity, Converter={StaticResource BoolToVis}}"/>
+                            <Separator/>
+                            <MenuItem Header="Ascending" IsChecked="{Binding IsSortAscending, Mode=OneWay}" Command="{Binding SortDirectionCommand}" CommandParameter="False"/>
+                            <MenuItem Header="Descending" IsChecked="{Binding SortDescending, Mode=OneWay}" Command="{Binding SortDirectionCommand}" CommandParameter="True"/>
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                </Button>
                 <TextBlock Text="Drag cards between columns. Double-click a card to edit it." Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="18,0,0,0"/>
             </StackPanel>
         </Border>
@@ -101,12 +153,22 @@
                                             <ItemsControl ItemsSource="{Binding Tasks}">
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>
-                                                        <Border Background="{StaticResource EditorBrush}" CornerRadius="6" Padding="10,8" Margin="0,0,0,6"
-                                                                BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Cursor="Hand"
+                                                        <Border Style="{StaticResource CardFrame}" CornerRadius="6" Padding="10,8" Margin="0,0,0,6" Cursor="Hand"
                                                                 MouseLeftButtonDown="Card_MouseLeftButtonDown" MouseMove="Card_MouseMove">
                                                             <Border.ContextMenu>
                                                                 <ContextMenu>
                                                                     <MenuItem Header="Edit…" Command="{Binding PlacementTarget.Tag.EditTaskCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" CommandParameter="{Binding}"/>
+                                                                    <MenuItem Header="Severity" ItemsSource="{Binding SeverityOptions}"
+                                                                              Visibility="{Binding PlacementTarget.Tag.SupportsSeverity, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVis}}">
+                                                                        <MenuItem.ItemContainerStyle>
+                                                                            <Style TargetType="MenuItem">
+                                                                                <Setter Property="Header" Value="{Binding Level}"/>
+                                                                                <Setter Property="IsChecked" Value="{Binding IsCurrent, Mode=OneWay}"/>
+                                                                                <Setter Property="Command" Value="{Binding Card.SetSeverityCommand}"/>
+                                                                                <Setter Property="CommandParameter" Value="{Binding}"/>
+                                                                            </Style>
+                                                                        </MenuItem.ItemContainerStyle>
+                                                                    </MenuItem>
                                                                     <MenuItem Header="Delete" Command="{Binding PlacementTarget.Tag.DeleteTaskCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" CommandParameter="{Binding}"/>
                                                                 </ContextMenu>
                                                             </Border.ContextMenu>
@@ -114,7 +176,14 @@
                                                                 <Binding Path="DataContext" ElementName="Root"/>
                                                             </Border.Tag>
                                                             <StackPanel>
-                                                                <TextBlock Text="{Binding Task.Name}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                                <DockPanel>
+                                                                    <Border DockPanel.Dock="Right" Style="{StaticResource SeverityPill}" DataContext="{Binding Severity}"
+                                                                            VerticalAlignment="Top" Margin="8,1,0,0" ToolTip="Severity"
+                                                                            Visibility="{Binding DataContext.ShowSeverity, RelativeSource={RelativeSource AncestorType=DockPanel}, Converter={StaticResource BoolToVis}}">
+                                                                        <TextBlock Text="{Binding}"/>
+                                                                    </Border>
+                                                                    <TextBlock Text="{Binding Task.Name}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                                </DockPanel>
                                                                 <TextBlock Text="{Binding Preview}" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,3,0,0"
                                                                            Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"/>
                                                             </StackPanel>

@@ -14,6 +14,10 @@ public static class Ui
     {
         var msg = ex switch
         {
+            SparkApiException { Status: System.Net.HttpStatusCode.Unauthorized } =>
+                "The server rejected this device's token (missing, invalid or revoked). Update it in connection settings (key button in the top bar).",
+            SparkApiException { Status: System.Net.HttpStatusCode.Forbidden } forbidden =>
+                $"This device isn't allowed to do that ({forbidden.Code ?? "forbidden"}). Its token may be missing a permission; hover the connection status to see what it has.",
             SparkApiException api => api.Code switch
             {
                 "column_not_empty" => "That column still has tasks. Move or delete them first.",

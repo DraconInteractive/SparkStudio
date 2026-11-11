@@ -26,11 +26,14 @@ internal static class DialogKit
         return w;
     }
 
-    public static StackPanel Buttons(Window w, out Button ok, string okText = "OK")
+    public static StackPanel Buttons(Window w, out Button ok, string okText = "OK", Func<bool>? validate = null)
     {
         ok = new Button { Content = okText, IsDefault = true, Margin = new Thickness(8, 0, 0, 0), Style = (Style)Application.Current.FindResource("PrimaryButton") };
         var cancel = new Button { Content = "Cancel", IsCancel = true, Margin = new Thickness(8, 0, 0, 0), Style = (Style)Application.Current.FindResource("FlatButton") };
-        ok.Click += (_, _) => w.DialogResult = true;
+        ok.Click += (_, _) =>
+        {
+            if (validate?.Invoke() != false) w.DialogResult = true;
+        };
         var panel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0) };
         panel.Children.Add(cancel);
         panel.Children.Add(ok);
@@ -84,11 +87,12 @@ public static class TextDialog
     }
 }
 
-public sealed record TaskDialogResult(string Name, string Description, string ColumnId, bool Delete);
+/// <summary>Severity is null when the server doesn't support task severity.</summary>
+public sealed record TaskDialogResult(string Name, string Description, string ColumnId, string? Severity, bool Delete);
 
 public static class TaskDialog
 {
-    public static TaskDialogResult? Show(Window? owner, BoardTask task, IEnumerable<BoardColumn> columns)
+    public static TaskDialogResult? Show(Window? owner, BoardTask task, IEnumerable<BoardColumn> columns, bool supportsSeverity)
     {
         var w = DialogKit.NewWindow(owner, "Edit task", 520);
         var name = new TextBox { Text = task.Name, FontSize = 14, FontWeight = FontWeights.SemiBold };
@@ -99,6 +103,11 @@ public static class TaskDialog
         };
         var cols = columns.ToList();
         var column = new ComboBox { ItemsSource = cols, DisplayMemberPath = "Name", SelectedItem = cols.FirstOrDefault(c => c.Id == task.ColumnId) };
+        var severity = new ComboBox
+        {
+            ItemsSource = TaskSeverity.Levels.Reverse().ToList(),
+            SelectedItem = task.Severity ?? TaskSeverity.Normal,
+        };
         bool delete = false;
         var del = new Button
         {
@@ -119,8 +128,25 @@ public static class TaskDialog
         root.Children.Add(DialogKit.Label("Description"));
         root.Children.Add(desc);
         root.Children.Add(new Border { Height = 10 });
-        root.Children.Add(DialogKit.Label("Column"));
-        root.Children.Add(column);
+        // Column and severity side by side.
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition());
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        row.ColumnDefinitions.Add(new ColumnDefinition());
+        var colPanel = new StackPanel();
+        colPanel.Children.Add(DialogKit.Label("Column"));
+        colPanel.Children.Add(column);
+        row.Children.Add(colPanel);
+        if (supportsSeverity)
+        {
+            var sevPanel = new StackPanel();
+            sevPanel.Children.Add(DialogKit.Label("Severity"));
+            sevPanel.Children.Add(severity);
+            Grid.SetColumn(sevPanel, 2);
+            row.Children.Add(sevPanel);
+        }
+        else Grid.SetColumnSpan(colPanel, 3);
+        root.Children.Add(row);
         var footer = new DockPanel { Margin = new Thickness(0, 4, 0, 0) };
         var buttons = DialogKit.Buttons(w, out var ok, "Save");
         DockPanel.SetDock(buttons, Dock.Right);
@@ -137,6 +163,7 @@ public static class TaskDialog
 
         if (w.ShowDialog() != true) return null;
         if (!delete && string.IsNullOrWhiteSpace(name.Text)) return null;
-        return new TaskDialogResult(name.Text.Trim(), desc.Text, (column.SelectedItem as BoardColumn)?.Id ?? task.ColumnId, delete);
+        return new TaskDialogResult(name.Text.Trim(), desc.Text, (column.SelectedItem as BoardColumn)?.Id ?? task.ColumnId,
+            supportsSeverity ? severity.SelectedItem as string : null, delete);
     }
 }

@@ -85,7 +85,7 @@ public class LiveServerTests : IAsyncLifetime
 
         Assert.Equal("Watch Timer.md", result.File.Name);
         Assert.Equal("# Timer\n", (await c.GetTextAsync(result.File.Id)).Text);
-        if (await c.SupportsFileRenameAsync())
+        if (await c.SupportsFileRenameAsync() == true)
         {
             // Native rename keeps the file's identity.
             Assert.Equal(target.Id, result.File.Id);
@@ -116,7 +116,7 @@ public class LiveServerTests : IAsyncLifetime
     public async Task Native_rename_keeps_identity_revision_and_etag()
     {
         var c = _s.Client;
-        if (!await c.SupportsFileRenameAsync()) return; // server predates API 1.45
+        if (await c.SupportsFileRenameAsync() != true) return; // server predates API 1.45
         var file = await c.UploadTextAsync(_s.Drive, _s.Dir, "Draft.md", "text");
         var before = await c.GetTextAsync(file.Id);
 
@@ -128,6 +128,50 @@ public class LiveServerTests : IAsyncLifetime
         var after = await c.GetTextAsync(file.Id);
         Assert.Equal("text", after.Text);
         Assert.Equal(before.ETag, after.ETag); // an open editor's ETag stays valid across a rename
+    }
+
+    [LiveFact]
+    public async Task Verify_reports_open_mode_on_open_servers()
+    {
+        var contract = await _s.Client.GetContractAsync();
+        if (contract?.IsTokenMode == true) return; // this check is for open-mode test instances
+        var auth = await _s.Client.VerifyAsync("studio-integration-test");
+        Assert.False(auth.Authenticated);
+        Assert.True(auth.IsOpenMode);
+    }
+
+    [LiveFact]
+    public async Task Task_severity_defaults_to_normal_and_survives_other_edits()
+    {
+        var c = _s.Client;
+        var pid = _s.Project.Id;
+        var board = (await c.CreateBoardAsync(pid, "Sev"))!;
+        var col = (await c.CreateColumnAsync(pid, board.Id, "To do"))!;
+        var done = (await c.CreateColumnAsync(pid, board.Id, "Done"))!;
+        var plain = (await c.CreateTaskAsync(pid, board.Id, col.Id, "Plain", ""))!;
+
+        if ((await c.GetContractAsync())?.SupportsTaskSeverity != true)
+        {
+            Assert.Null(plain.Severity); // pre-1.48 server: no severity, and omitting it keeps requests valid
+            return;
+        }
+
+        Assert.Equal(TaskSeverity.Normal, plain.Severity);
+        var urgent = (await c.CreateTaskAsync(pid, board.Id, col.Id, "Fire", "", severity: "Urgent"))!;
+        Assert.Equal("Urgent", urgent.Severity);
+
+        // Omitted severity on PATCH is retained.
+        var moved = (await c.UpdateTaskAsync(pid, board.Id, urgent.Id, columnId: done.Id, name: "Fire!"))!;
+        Assert.Equal("Urgent", moved.Severity);
+
+        foreach (var level in TaskSeverity.Levels)
+            Assert.Equal(level, (await c.UpdateTaskAsync(pid, board.Id, plain.Id, severity: level))!.Severity);
+
+        var bad = await Assert.ThrowsAsync<SparkApiException>(() => c.UpdateTaskAsync(pid, board.Id, plain.Id, severity: "urgent"));
+        Assert.Equal("invalid_severity", bad.Code);
+
+        var full = (await c.GetBoardAsync(pid, board.Id))!;
+        Assert.Equal("Urgent", full.Columns.Single(x => x.Id == done.Id).Tasks.Single().Severity);
     }
 
     [LiveFact]
