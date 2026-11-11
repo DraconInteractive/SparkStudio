@@ -70,6 +70,7 @@
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="&#xE945;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{StaticResource AccentBrush}" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <TextBlock Text="SPARK Studio" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="VersionText" FontSize="11" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="6,2,0,0"/>
                     <Rectangle Width="1" Height="20" Fill="{StaticResource LineBrush}" Margin="14,0,6,0"/>
 
                     <!-- Project switcher: a compact button; the project tree lives in a dropdown (Ctrl+P) -->

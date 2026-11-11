@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Zips the self-contained SparkStudio.exe and uploads the zip to a SPARK instance.
+    Zips the self-contained SparkStudio.exe and uploads it to a SPARK instance as a versioned release
+    (SparkStudio_v0.0.1.zip).
 
 .DESCRIPTION
     Reads settings from .env next to this script (environment variables take precedence):
@@ -10,17 +11,29 @@
         SPARK_DEVICE_ID    Optional: device ID the token was issued for; enables a credential check first
         SPARK_DEPLOY_DIR   Optional: destination directory (default /releases/SparkStudio)
         SPARK_DEPLOY_DRIVE Optional: drive letter (default: the server's choice for that directory)
-        SPARK_DEPLOY_NAME  Optional: file name on the server (default SparkStudio.zip)
+        SPARK_DEPLOY_NAME  Optional: file name on the server; {version} is replaced with the release
+                           version (default SparkStudio_v{version}.zip)
 
-    SPARK uploads always create a new file (duplicate names are allowed), so the script uploads the new
-    build first, checks its size, then deletes older uploads with the same name in the destination
-    directory. If anything fails before that, the previous build is left in place.
+    The version is <Version> in src/SparkStudio/SparkStudio.csproj, which is also stamped into the exe and
+    shown in the app's title bar. The script reads it from the built exe and refuses to deploy a build
+    whose version doesn't match the csproj (rebuild with -Build). Use -Bump to raise the version and build.
+
+    Each version is uploaded once: deploying a version that is already on the server fails unless -Force
+    is given (which uploads it again, checks it, then removes the earlier copy). Older versions are kept as
+    a release history unless -Prune is given.
 
 .PARAMETER Build
     Run the self-contained publish (dotnet publish -p:PublishProfile=win-x64) before uploading.
 
-.PARAMETER KeepOld
-    Don't delete previous uploads with the same name.
+.PARAMETER Bump
+    Raise the version in SparkStudio.csproj (patch: 0.0.1 -> 0.0.2, minor: 0.1.0, major: 1.0.0), then build.
+
+.PARAMETER Force
+    Redeploy a version that is already on the server, replacing it.
+
+.PARAMETER Prune
+    After uploading, delete the other SparkStudio builds in the destination directory (older versions and
+    unversioned SparkStudio.zip uploads).
 
 .PARAMETER DryRun
     Check the credentials, artifact and destination, but don't upload or delete anything.
@@ -29,12 +42,17 @@
     Allow a plain http:// SPARK_URL (local test servers only: the token is sent unencrypted).
 
 .EXAMPLE
+    ./deploy.ps1 -Bump patch
+.EXAMPLE
     ./deploy.ps1 -Build
 #>
 [CmdletBinding()]
 param(
     [switch]$Build,
-    [switch]$KeepOld,
+    [ValidateSet('patch', 'minor', 'major')]
+    [string]$Bump,
+    [switch]$Force,
+    [switch]$Prune,
     [switch]$DryRun,
     [switch]$AllowHttp
 )
@@ -86,7 +104,7 @@ $token    = Setting 'SPARK_TOKEN'
 $deviceId = Setting 'SPARK_DEVICE_ID'
 $dir      = Setting 'SPARK_DEPLOY_DIR' '/releases/SparkStudio'
 $drive    = Setting 'SPARK_DEPLOY_DRIVE'
-$name     = Setting 'SPARK_DEPLOY_NAME' 'SparkStudio.zip'
+$nameTemplate = Setting 'SPARK_DEPLOY_NAME' 'SparkStudio_v{version}.zip'
 
 if (-not $baseUrl) { Fail "SPARK_URL is not set. Copy .env.example to .env and fill it in." }
 if (-not $token)   { Fail "SPARK_TOKEN is not set. Add the device token to .env." }
@@ -124,9 +142,40 @@ function Query([hashtable]$q) {
         ForEach-Object { "$($_.Key)=$([Uri]::EscapeDataString([string]$_.Value))" }) -join '&'
 }
 
+# ---------- Version ----------
+$csproj = Join-Path $root 'src/SparkStudio/SparkStudio.csproj'
+$csprojText = [IO.File]::ReadAllText($csproj)
+$versionMatch = [regex]::Match($csprojText, '<Version>\s*(\d+)\.(\d+)\.(\d+)\s*</Version>')
+if (-not $versionMatch.Success) { Fail "No <Version>x.y.z</Version> found in $csproj." }
+$major = [int]$versionMatch.Groups[1].Value; $minor = [int]$versionMatch.Groups[2].Value; $patch = [int]$versionMatch.Groups[3].Value
+$version = "$major.$minor.$patch"
+if ($Bump) {
+    switch ($Bump) {
+        'major' { $major++; $minor = 0; $patch = 0 }
+        'minor' { $minor++; $patch = 0 }
+        'patch' { $patch++ }
+    }
+    $newVersion = "$major.$minor.$patch"
+    if ($DryRun) {
+        Write-Host "Version:   $version -> $newVersion (dry run: csproj not changed, nothing built)" -ForegroundColor Yellow
+        $version = $newVersion
+    }
+    else {
+        $csprojText = $csprojText.Substring(0, $versionMatch.Index) + "<Version>$newVersion</Version>" +
+            $csprojText.Substring($versionMatch.Index + $versionMatch.Length)
+        [IO.File]::WriteAllText($csproj, $csprojText, (New-Object Text.UTF8Encoding($false)))
+        Write-Host "Version:   $version -> $newVersion (SparkStudio.csproj updated)" -ForegroundColor Cyan
+        $version = $newVersion
+        $Build = $true
+    }
+}
+else {
+    Write-Host "Version:   $version"
+}
+
 # ---------- Artifact ----------
 $exe = Join-Path $root 'artifacts/publish/SparkStudio.exe'
-if ($Build) {
+if ($Build -and -not $DryRun) {
     Write-Host "Building self-contained release..." -ForegroundColor Cyan
     Remove-Item (Join-Path $root 'artifacts/publish') -Recurse -Force -ErrorAction SilentlyContinue
     dotnet publish (Join-Path $root 'src/SparkStudio') -p:PublishProfile=win-x64
@@ -135,6 +184,13 @@ if ($Build) {
 if (-not (Test-Path $exe)) { Fail "No build found at $exe. Run with -Build, or publish first." }
 
 $exeInfo = Get-Item $exe
+$exeVersion = $exeInfo.VersionInfo
+$builtVersion = "$($exeVersion.FileMajorPart).$($exeVersion.FileMinorPart).$($exeVersion.FileBuildPart)"
+if ($builtVersion -ne $version) {
+    if ($DryRun) { Write-Host "WARNING: the build is v$builtVersion, not v$version; a real run needs -Build or -Bump." -ForegroundColor Yellow }
+    else { Fail "The build is v$builtVersion but SparkStudio.csproj says v$version. Run with -Build to publish v$version." }
+}
+$name = $nameTemplate.Replace('{version}', $version)
 $sizeMb = [math]::Round($exeInfo.Length / 1MB, 1)
 $commit = (git -C $root log -1 --format='%h %s' 2>$null)
 $dirty = (git -C $root status --porcelain 2>$null) -ne $null
@@ -148,8 +204,8 @@ if ($newestSource -and $newestSource.LastWriteTime -gt $exeInfo.LastWriteTime) {
 }
 
 # ---------- Package ----------
-$zip = Join-Path $root 'artifacts/SparkStudio.zip'
-Remove-Item $zip -Force -ErrorAction SilentlyContinue
+$zip = Join-Path $root "artifacts/$name"
+Get-ChildItem (Join-Path $root 'artifacts') -Filter 'SparkStudio*.zip' -File -ErrorAction SilentlyContinue | Remove-Item -Force
 Compress-Archive -Path $exe -DestinationPath $zip -CompressionLevel Optimal
 $zipInfo = Get-Item $zip
 $zipMb = [math]::Round($zipInfo.Length / 1MB, 1)
@@ -172,16 +228,29 @@ if ($deviceId) {
 # ---------- Existing uploads ----------
 $target = if ($drive) { "${drive}:$dir/$name" } else { "$dir/$name" }
 Write-Host "Target:    $target"
-$existing = @()
+$inDir = @()
 $offset = 0
 do {
     $page = Invoke-Spark GET ("files?" + (Query @{ drive = $drive; directory = $dir; limit = 500; offset = $offset }))
-    $existing += @($page.files | Where-Object { $_.name -eq $name -and $_.directory -eq $dir })
+    $inDir += @($page.files | Where-Object { $_.directory -eq $dir })
     $offset += 500
 } while ($page.has_more)
+
+# Builds of any version (plus the old unversioned name), for the release listing and -Prune.
+$buildPattern = '^' + [regex]::Escape($nameTemplate).Replace('\{version}', '\d+(\.\d+)*') + '$'
+$legacyName = $nameTemplate -replace '[_-]?v?\{version\}', ''
+$builds = @($inDir | Where-Object { $_.name -match $buildPattern -or $_.name -eq $legacyName })
+$existing = @($builds | Where-Object { $_.name -eq $name })
+$others = @($builds | Where-Object { $_.name -ne $name })
+if ($others.Count -gt 0) {
+    Write-Host "Releases:  $(($others | ForEach-Object { $_.name } | Sort-Object -Unique) -join ', ')"
+}
 if ($existing.Count -gt 0) {
     $ids = ($existing | ForEach-Object { $_.id }) -join ', '
-    Write-Host "Previous:  $($existing.Count) upload(s) named $name ($ids)"
+    if (-not $Force) {
+        Fail "v$version is already deployed ($name, $ids). Bump the version (-Bump patch) or use -Force to replace it."
+    }
+    Write-Host "Replacing: $($existing.Count) existing upload(s) of $name ($ids)" -ForegroundColor Yellow
 }
 
 if ($DryRun) {
@@ -206,13 +275,13 @@ if ([long]$uploaded.size_bytes -ne $zipInfo.Length) {
 }
 Write-Host "Uploaded:  $($uploaded.id) on drive $($uploaded.drive_letter)" -ForegroundColor Green
 
-# ---------- Remove previous builds ----------
-if (-not $KeepOld) {
-    foreach ($old in $existing) {
-        if ($old.id -eq $uploaded.id) { continue }
-        Invoke-Spark DELETE "files/$($old.id)" | Out-Null
-        Write-Host "Removed:   $($old.id) (uploaded $($old.created_at))"
-    }
+# ---------- Remove replaced / pruned builds ----------
+$remove = @($existing)
+if ($Prune) { $remove += $others }
+foreach ($old in $remove) {
+    if ($old.id -eq $uploaded.id) { continue }
+    Invoke-Spark DELETE "files/$($old.id)" | Out-Null
+    Write-Host "Removed:   $($old.name) $($old.id) (uploaded $($old.created_at))"
 }
 
 Write-Host ""

@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel;
 using System.Windows;
+using SparkStudio.Infrastructure;
 using SparkStudio.ViewModels;
 
 namespace SparkStudio;
@@ -12,6 +13,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        VersionText.Text = AppVersion.Display;
+        Title = $"SPARK Studio {AppVersion.Display}";
         DataContext = _vm;
         Loaded += async (_, _) => await _vm.ConnectAsync();
     }

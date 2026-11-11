@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <!-- Release version: deploy.ps1 names the zip after it (SparkStudio_v<Version>.zip); bump with ./deploy.ps1 -Bump -->
+    <Version>0.0.1</Version>
   </PropertyGroup>
 
   <ItemGroup>

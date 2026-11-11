@@ -19,20 +19,27 @@ on any Windows 10/11 PC without installing .NET. Copy it anywhere and run it; se
 
 ### Deploying to a SPARK instance
 
-`deploy.ps1` zips `artifacts/publish/SparkStudio.exe` into `artifacts/SparkStudio.zip` and uploads it to a SPARK server. Copy `.env.example` to `.env`
-(git ignores it) and set `SPARK_URL` and `SPARK_TOKEN`: a device token with `files.read` and `files.write`.
-Optionally set `SPARK_DEVICE_ID` to check the token and its permissions first.
+`deploy.ps1` zips `artifacts/publish/SparkStudio.exe` into a versioned zip (`artifacts/SparkStudio_v0.0.1.zip`)
+and uploads it to a SPARK server. Copy `.env.example` to `.env` (git ignores it) and set `SPARK_URL` and
+`SPARK_TOKEN`: a device token with `files.read` and `files.write`. Optionally set `SPARK_DEVICE_ID` to check the
+token and its permissions first.
 
 ```
-./deploy.ps1 -Build      # publish, then upload
+./deploy.ps1 -Bump patch # 0.0.1 -> 0.0.2 in the csproj, publish, then upload (also minor / major)
+./deploy.ps1 -Build      # publish the current version, then upload
 ./deploy.ps1             # upload the existing build
-./deploy.ps1 -DryRun     # check token, build and destination only
+./deploy.ps1 -DryRun     # check token, build, version and destination only
 ```
 
-The zip goes to `/releases/SparkStudio/SparkStudio.zip` by default (`SPARK_DEPLOY_DIR`, `SPARK_DEPLOY_DRIVE`,
-`SPARK_DEPLOY_NAME` override this). SPARK keeps duplicate names as separate files, so the script uploads first,
-checks the size, then deletes previous uploads of the same name (`-KeepOld` keeps them). A failed upload leaves
-the previous build in place. The URL must be `https://` so the token isn't sent in clear text.
+The version is `<Version>` in `src/SparkStudio/SparkStudio.csproj`; it's stamped into the exe and shown in the
+app's title bar. The script reads the version from the built exe and refuses to upload a build that doesn't
+match the csproj. Each version is deployed once: re-deploying a version already on the server needs `-Force`
+(which uploads, checks the size, then removes the earlier copy). Older versions stay on the server as a release
+history; `-Prune` deletes them (and old unversioned `SparkStudio.zip` uploads) after a successful upload.
+
+The zip goes to `/releases/SparkStudio/SparkStudio_v<version>.zip` by default (`SPARK_DEPLOY_DIR`,
+`SPARK_DEPLOY_DRIVE`, and `SPARK_DEPLOY_NAME` with a `{version}` placeholder override this). A failed upload
+leaves the previous builds in place. The URL must be `https://` so the token isn't sent in clear text.
 
 The app connects to the server URL in the top bar (saved to `%APPDATA%\SparkStudio\settings.json`).
 Live updates come from the server's TCP notification stream, whose port/transport the app reads from `/api`.
