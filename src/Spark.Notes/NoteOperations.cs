@@ -9,7 +9,7 @@ public static class NoteOperations
     /// <summary>Text files small enough to scan for [[links]].</summary>
     public static bool IsLinkScannable(SparkFile f) =>
         f.SizeBytes <= 1024 * 1024 &&
-        (NoteIndex.IsNote(f) || f.Name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase));
+        (NoteIndex.IsNote(f) || NoteIndex.LogicalName(f).EndsWith(".txt", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Lists every file under <paramref name="rootDirectory"/> on <paramref name="drive"/>, including subfolders.</summary>
     public static async Task<(List<string> Directories, List<SparkFile> Files)> ListTreeAsync(
@@ -29,6 +29,25 @@ public static class NoteOperations
     }
 
     /// <summary>
+    /// Renames a file without touching links: in place on API 1.45+ (same ID), otherwise by uploading a copy of its
+    /// stored bytes under the new name and deleting the original (new ID). Encrypted content is copied as it is.
+    /// </summary>
+    public static async Task<SparkFile> RenameFileAsync(SparkClient client, SparkFile file, string newName, CancellationToken ct = default)
+    {
+        var native = await client.SupportsFileRenameAsync(ct);
+        if (native != false)
+        {
+            // Unknown support (contract unreadable without discovery.read): try it; old servers reject the field with 400.
+            try { return await client.RenameFileAsync(file.Id, newName, ct); }
+            catch (SparkApiException ex) when (native == null && ex.Status == System.Net.HttpStatusCode.BadRequest) { }
+        }
+        var bytes = await client.GetBytesAsync(file.Id, ct);
+        var created = await client.UploadAsync(file.DriveLetter, file.Directory, newName, bytes, ct);
+        await client.DeleteFileAsync(file.Id, ct);
+        return created;
+    }
+
+    /// <summary>
     /// Renames a file and rewrites [[links]] in the notes that pointed at it (each save guarded by its ETag).
     /// Uses the server's in-place rename when available (API 1.45+, the file keeps its ID); older servers
     /// get a copy under the new name followed by deletion of the original.
@@ -37,27 +56,15 @@ public static class NoteOperations
         SparkFile file, string newName, LinkCache links, CancellationToken ct = default)
     {
         var (_, before) = await ListTreeAsync(client, drive, rootDirectory, ct);
-        if (before.Any(f => f.Directory == file.Directory && f.Id != file.Id && f.Name.Equals(newName, StringComparison.OrdinalIgnoreCase)))
+        if (before.Any(f => f.Directory == file.Directory && f.Id != file.Id &&
+                              NoteIndex.LogicalName(f).Equals(NoteIndex.LogicalName(newName), StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"\"{newName}\" already exists in that folder.");
 
         var oldIndex = new NoteIndex(rootDirectory, before);
         await links.RefreshAsync(client, before.Where(IsLinkScannable).ToList(), ct);
         var referrers = links.BacklinksTo(file, oldIndex).Select(b => b.Source).DistinctBy(f => f.Id).ToList();
 
-        SparkFile? created = null;
-        var native = await client.SupportsFileRenameAsync(ct);
-        if (native != false)
-        {
-            // Unknown support (contract unreadable without discovery.read): try it; old servers reject the field with 400.
-            try { created = await client.RenameFileAsync(file.Id, newName, ct); }
-            catch (SparkApiException ex) when (native == null && ex.Status == System.Net.HttpStatusCode.BadRequest) { }
-        }
-        if (created == null)
-        {
-            var bytes = await client.GetBytesAsync(file.Id, ct);
-            created = await client.UploadAsync(file.DriveLetter, file.Directory, newName, bytes, ct);
-            await client.DeleteFileAsync(file.Id, ct);
-        }
+        var created = await RenameFileAsync(client, file, newName, ct);
 
         var after = before.Where(f => f.Id != file.Id).Append(created).ToList();
         var newIndex = new NoteIndex(rootDirectory, after);
@@ -65,15 +72,15 @@ public static class NoteOperations
         int updated = 0, failed = 0;
         foreach (var src in referrers)
         {
-            var id = src.Id == file.Id ? created.Id : src.Id;
+            var target = src.Id == file.Id ? created : src;
             try
             {
-                var content = await client.GetTextAsync(id, ct);
+                var content = await client.GetTextAsync(target.Id, ct);
                 var dir = src.Directory;
                 var newTarget = newIndex.LinkTextFor(created, dir);
                 var text = WikiLink.RewriteTargets(content.Text, t => oldIndex.Resolve(t, dir)?.Id == file.Id, newTarget, out var n);
                 if (n == 0) continue;
-                var (saved, _) = await client.PutTextAsync(id, text, content.ETag, ct);
+                var (saved, _) = await client.PutTextAsync(target, text, content.ETag, ct);
                 links.Update(saved, text);
                 if (saved.Id == created.Id) created = saved;
                 updated += n;

@@ -40,6 +40,9 @@ public static class Ui
         return true;
     }
 
+    public static void Info(string title, string message) =>
+        MessageBox.Show(Owner!, message, title, MessageBoxButton.OK, MessageBoxImage.Information);
+
     public static bool Confirm(string title, string message) =>
         MessageBox.Show(Owner!, message, title, MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
 

@@ -15,7 +15,7 @@ public class NoteSessionTests : IAsyncLifetime
     {
         var file = await _s.Client.UploadTextAsync(_s.Drive, _s.Dir, "Typing.md", text);
         var content = await _s.Client.GetTextAsync(file.Id);
-        return (file, new NoteSession(_s.Client, file.Id, content.Text, content.ETag));
+        return (file, new NoteSession(_s.Client, file, content.Text, content.ETag));
     }
 
     [LiveFact]

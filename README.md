@@ -121,7 +121,50 @@ Use the server's `https://` address: over plain `http` the token travels unencry
   aren't kept offline and show a placeholder.
 - Text typed just before the connection dropped is kept in the open note and saved, ETag-guarded, as soon as the
   connection returns. The app retries every 20 seconds (or click **Connect**).
-- Copies live in `%LOCALAPPDATA%\SparkStudio\offline\<server>\` (plain files, protected by your Windows account).
+- Copies live in `%LOCALAPPDATA%\SparkStudio\offline\<server>\` (plain files, protected by your Windows account;
+  notes of encrypted projects stay encrypted, and an encrypted project can be unlocked offline).
+
+## Encrypted projects
+
+A project's notes can be encrypted on this PC before they're uploaded, so the server (and anyone who gets into its
+storage, or downloads a file by its ID) only ever sees ciphertext.
+
+- **Encrypt:** the lock button in the Notes file panel (next to **Keep offline**). Choose a passphrase, then store
+  the **recovery key** it shows once. Without the passphrase or the recovery key the notes can't be recovered by
+  anyone. The app then encrypts every text file in the root project and its subprojects, and renames each to
+  `<name>.enc` (`Plan.md` → `Plan.md.enc`). Titles, `[[links]]`, backlinks, search and rename work as before, since
+  they ignore `.enc`.
+- **Unlock:** opening an encrypted project asks for the passphrase (or the recovery key). **Remember on this PC**
+  keeps the project key, encrypted with Windows DPAPI for your account, in `%LOCALAPPDATA%\SparkStudio\keys.json`,
+  so you aren't asked again. If you cancel, the project stays locked: its notes can't be opened, and search and
+  backlinks skip them.
+- **Lock** (lock button menu): forgets the key on this PC and in memory, and closes the open note.
+- **Encrypt remaining files** (lock button menu): encrypts text files that another app added to the project in
+  plain text. The file panel says when there are any. A save to any file in an encrypted project is encrypted
+  anyway.
+- **Change passphrase…** (lock button menu): re-wraps the project key. Notes aren't re-encrypted, and the recovery
+  key stays the same. An old copy of the vault file, e.g. in a server backup, still opens with the old passphrase.
+
+How it works: the project key is a random 256-bit key. `.spark-vault.json` in the project's root folder holds it
+twice, never in the clear: once wrapped with a key derived from the passphrase (PBKDF2-HMAC-SHA256, 600,000
+iterations) and once with a key derived from the recovery key (HKDF-SHA256). Each note is AES-256-GCM encrypted with
+a fresh nonce and stored as armoured text (`-----BEGIN SPARK ENCRYPTED NOTE-----` …), because the server's
+ETag-guarded saves only accept UTF-8 text. Armouring adds about 35%, so files over ~1.4 MB aren't encrypted. Saving,
+conflict detection and **Compare** all work on the decrypted text.
+
+**Encrypted:** note content on the server, and offline copies (`%LOCALAPPDATA%\SparkStudio\offline`). Copies saved
+before a project was encrypted are re-encrypted when it's encrypted or unlocked.
+**Not encrypted:** file and folder names, sizes and dates, project names and descriptions, boards, and non-text files
+(images etc.). Versions the server kept before encryption (backups, history) also stay readable. Other apps (the web
+UI, Obsidian) see the armoured text.
+
+**Without the app:** `tools/Unprotect-SparkNote.ps1` (PowerShell 7, nothing else needed) decrypts notes given the
+vault file and the passphrase or recovery key:
+
+```
+./tools/Unprotect-SparkNote.ps1 -Vault .\.spark-vault.json -Path .\notes\*.enc -OutDir .\plain
+./tools/Unprotect-SparkNote.ps1 -Vault .\.spark-vault.json -Path .\Plan.md.enc -UseRecoveryKey
+```
 
 ## Boards
 
@@ -142,9 +185,10 @@ the severity controls are hidden and requests never include the field.
 | Path | What |
 | --- | --- |
 | `src/Spark.Api` | Typed REST client and TCP notification client |
-| `src/Spark.Notes` | Wikilink parsing/resolution, Markdown ⇄ FlowDocument conversion, rename/backlink logic |
+| `src/Spark.Notes` | Wikilink parsing/resolution, Markdown ⇄ FlowDocument conversion, rename/backlink logic; `Crypto/`: note encryption, vaults, keyring |
 | `src/SparkStudio` | WPF app (MVVM with CommunityToolkit.Mvvm; the editor is `Views/NoteEditor`) |
 | `tests/Spark.Notes.Tests` | Markdown round-trip, escaping, link parsing/resolution |
+| `tools/Unprotect-SparkNote.ps1` | Decrypts encrypted notes without the app |
 | `tests/Spark.Integration.Tests` | Live tests; run only when `SPARK_TEST_URL` points at a **disposable** SPARK instance |
 
 ```

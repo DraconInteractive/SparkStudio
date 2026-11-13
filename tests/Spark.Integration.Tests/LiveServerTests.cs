@@ -209,14 +209,23 @@ public class LiveServerTests : IAsyncLifetime
         var port = await _s.Client.GetNotificationPortAsync() ?? 47684;
         await using var live = new NotificationClient(url.Host, port, "studio-integration-test");
         var welcomed = new TaskCompletionSource();
-        var created = new TaskCompletionSource<SparkNotification>();
+        var seen = new System.Collections.Concurrent.ConcurrentQueue<SparkNotification>();
+        var arrived = new SemaphoreSlim(0);
         live.ResyncRequired += () => welcomed.TrySetResult();
-        live.Notified += n => { if (n.Type == "file.created") created.TrySetResult(n); };
+        // Other test classes run in parallel and create files too: look for this test's file among the events.
+        live.Notified += n =>
+        {
+            if (n.Type != "file.created") return;
+            seen.Enqueue(n);
+            arrived.Release();
+        };
         live.Start();
         await welcomed.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         var file = await _s.Client.UploadTextAsync(_s.Drive, _s.Dir, "Live.md", "");
-        var n = await created.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal($"/files/{file.Id}", n.Resource);
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!seen.Any(n => n.Resource == $"/files/{file.Id}"))
+            Assert.True(await arrived.WaitAsync(deadline - DateTime.UtcNow > TimeSpan.Zero ? deadline - DateTime.UtcNow : TimeSpan.Zero),
+                "no file.created notification for the uploaded file");
     }
 }

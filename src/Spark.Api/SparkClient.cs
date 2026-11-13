@@ -241,8 +241,11 @@ public sealed class SparkClient : IDisposable
         return (await resp.Content.ReadFromJsonAsync<SparkFile>(Json, ct))!;
     }
 
+    /// <summary>Optional transform for all text reads and writes (client-side encryption).</summary>
+    public IContentCodec? Codec { get; set; }
+
     public Task<SparkFile> UploadTextAsync(string drive, string directory, string name, string text, CancellationToken ct = default) =>
-        UploadAsync(drive, directory, name, Utf8NoBom.GetBytes(text), ct);
+        UploadAsync(drive, directory, name, Utf8NoBom.GetBytes(Codec?.Encode(null, directory, text) ?? text), ct);
 
     public async Task<byte[]> GetBytesAsync(string id, CancellationToken ct = default)
     {
@@ -257,11 +260,23 @@ public sealed class SparkClient : IDisposable
         await EnsureSuccessAsync(resp, ct);
         var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
         var etag = resp.Headers.ETag?.ToString() ?? "";
-        return new TextContent(DecodeUtf8(bytes), etag);
+        var text = DecodeUtf8(bytes);
+        return new TextContent(Codec?.Decode(id, text) ?? text, etag);
     }
 
     /// <summary>Saves text guarded by <paramref name="etag"/>. Throws with status 412 if the file changed meanwhile.</summary>
-    public async Task<(SparkFile File, string ETag)> PutTextAsync(string id, string text, string etag, CancellationToken ct = default)
+    public Task<(SparkFile File, string ETag)> PutTextAsync(SparkFile file, string text, string etag, CancellationToken ct = default) =>
+        PutRawTextAsync(file.Id, Codec?.Encode(file.Id, file.Directory, text) ?? text, etag, ct);
+
+    /// <summary>
+    /// Saves text by file ID alone. With a <see cref="Codec"/>, prefer the <see cref="SparkFile"/> overload: the
+    /// codec can then tell from the file's folder whether it must be encrypted.
+    /// </summary>
+    public Task<(SparkFile File, string ETag)> PutTextAsync(string id, string text, string etag, CancellationToken ct = default) =>
+        PutRawTextAsync(id, Codec?.Encode(id, null, text) ?? text, etag, ct);
+
+    /// <summary>Saves text exactly as given, bypassing <see cref="Codec"/> (e.g. a vault file, which is never encrypted).</summary>
+    public async Task<(SparkFile File, string ETag)> PutRawTextAsync(string id, string text, string etag, CancellationToken ct = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Put, $"files/{id}/content")
         {

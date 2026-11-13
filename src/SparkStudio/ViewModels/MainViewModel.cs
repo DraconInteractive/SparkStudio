@@ -59,6 +59,8 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     public string DeviceId { get; private set; } = Settings.DefaultDeviceId;
 
     public SparkClient? Client { get; private set; }
+    /// <summary>Unlocked keys of encrypted projects (and which folders they cover) for the current connection.</summary>
+    public Spark.Notes.Crypto.Keyring? Keys { get; private set; }
     public Settings Settings => _settings;
 
     [ObservableProperty] private string _serverUrl;
@@ -160,10 +162,13 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        Client = new SparkClient(uri, token);
+        // One keyring per connection: it encrypts/decrypts notes of encrypted projects, on the server and in offline copies.
+        Keys = new Spark.Notes.Crypto.Keyring(new DpapiKeyStore());
+        Client = new SparkClient(uri, token) { Codec = Keys };
         _uri = uri;
         _token = token;
         Store = OpenStore();
+        if (Store != null) Store.Codec = Keys;
         Status = "Connecting…";
 
         // 1. Who are we? /auth/verify needs no permission, so it works before anything else.

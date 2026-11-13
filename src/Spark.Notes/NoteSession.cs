@@ -51,16 +51,21 @@ public sealed class NoteSession
     private string? _pendingText;
     private int _queued;
 
-    public NoteSession(SparkClient client, string fileId, string text, string etag)
+    public NoteSession(SparkClient client, SparkFile file, string text, string etag)
     {
         _client = client;
-        FileId = fileId;
+        File = file;
         SavedText = text;
         ETag = etag;
         Remember(etag);
     }
 
-    public string FileId { get; }
+    /// <summary>
+    /// The note being saved. Its folder tells the client's codec whether saves must be encrypted; keep it current
+    /// when the file is renamed or moved.
+    /// </summary>
+    public SparkFile File { get; set; }
+    public string FileId => File.Id;
     /// <summary>ETag of the server revision we believe is current (what the next save sends as If-Match).</summary>
     public string ETag { get; private set; }
     /// <summary>The text the server has at <see cref="ETag"/>.</summary>
@@ -129,7 +134,7 @@ public sealed class NoteSession
         if (text == SavedText) return new SaveResult(SaveStatus.Saved);
         try
         {
-            return Accept(await _client.PutTextAsync(FileId, text, ETag), text);
+            return Accept(await _client.PutTextAsync(File, text, ETag), text);
         }
         catch (SparkApiException ex) when (ex.Status == HttpStatusCode.PreconditionFailed)
         {
@@ -164,7 +169,7 @@ public sealed class NoteSession
             Remember(server.ETag);
             try
             {
-                return Accept(await _client.PutTextAsync(FileId, text, server.ETag), text);
+                return Accept(await _client.PutTextAsync(File, text, server.ETag), text);
             }
             catch (SparkApiException ex) when (ex.Status == HttpStatusCode.PreconditionFailed)
             {
@@ -182,6 +187,7 @@ public sealed class NoteSession
 
     private SaveResult Accept((SparkFile File, string ETag) put, string text)
     {
+        File = put.File;
         ETag = put.ETag;
         SavedText = text;
         Remember(put.ETag);
@@ -206,7 +212,7 @@ public sealed class NoteSession
         await WaitForSavesAsync();
         try
         {
-            var put = await _client.PutTextAsync(FileId, text, reviewedETag);
+            var put = await _client.PutTextAsync(File, text, reviewedETag);
             InConflict = false;
             return Accept(put, text);
         }

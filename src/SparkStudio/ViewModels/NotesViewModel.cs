@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Spark.Api;
 using Spark.Notes;
+using Spark.Notes.Crypto;
 using SparkStudio.Infrastructure;
 
 namespace SparkStudio.ViewModels;
@@ -35,10 +36,12 @@ public sealed class FileNode : FileTreeNode
     public FileNode(SparkFile file)
     {
         File = file;
-        Name = NoteIndex.IsNote(file) ? NoteIndex.TitleOf(file) : file.Name;
+        Name = NoteIndex.IsNote(file) ? NoteIndex.TitleOf(file) : NoteIndex.LogicalName(file);
     }
 
     public SparkFile File { get; }
+    /// <summary>Stored encrypted on the server (or will be, at its next save).</summary>
+    public bool IsEncrypted { get; init; }
     /// <summary>False when offline and this file has no saved copy (shown dimmed, can't be opened).</summary>
     public bool IsAvailable { get; init; } = true;
     public bool IsNote => NoteIndex.IsNote(File);
@@ -96,8 +99,11 @@ public partial class OpenDocument : ObservableObject
     public string SavedText => Session.SavedText;
     /// <summary>Incremented on every edit; tells whether the text changed while a save was running.</summary>
     public int Version { get; set; }
-    public string Title => NoteIndex.IsNote(File) ? NoteIndex.TitleOf(File) : File.Name;
+    public string Title => NoteIndex.IsNote(File) ? NoteIndex.TitleOf(File) : NoteIndex.LogicalName(File);
     public bool IsMarkdown => NoteIndex.IsNote(File);
+
+    // The session saves to this file; its folder decides whether saves are encrypted.
+    partial void OnFileChanged(SparkFile value) => Session.File = value;
 }
 
 public partial class NotesViewModel : ObservableObject
@@ -123,6 +129,7 @@ public partial class NotesViewModel : ObservableObject
         Project = project;
         Root = root;
         _index = new NoteIndex(root.Directory, Array.Empty<SparkFile>());
+        if (Keys != null) Keys.Changed += () => Ui.Post(OnKeysChanged);
     }
 
     public Project Project { get; }
@@ -208,13 +215,24 @@ public partial class NotesViewModel : ObservableObject
         {
             LoadError = "Could not load files: " + ex.Message;
         }
-        finally { IsLoading = false; }
+        finally
+        {
+            IsLoading = false;
+        }
+        // An encrypted project asks for its passphrase once when it's first shown (it can be unlocked later too).
+        if (IsLocked && !_unlockAsked)
+        {
+            _unlockAsked = true;
+            Unlock();
+        }
     }
 
     private async Task RefreshFilesAsync()
     {
         if (IsOffline) return;
-        var (dirs, files) = await NoteOperations.ListTreeAsync(_client, Drive, Root.Directory);
+        var (dirs, all) = await NoteOperations.ListTreeAsync(_client, Drive, Root.Directory);
+        await LoadVaultAsync(all);
+        var files = all.Where(f => !ProjectVault.IsVaultFile(f)).ToList();
         Index = new NoteIndex(Root.Directory, files);
         BuildTree(dirs, files);
         IndexChanged?.Invoke();
@@ -240,16 +258,26 @@ public partial class NotesViewModel : ObservableObject
             OfflineInfo = null;
             return;
         }
-        Index = new NoteIndex(Root.Directory, tree.Files);
-        BuildTree(tree.Directories, tree.Files);
-        int available = 0;
-        foreach (var f in tree.Files.Where(NoteIndex.IsText))
+        if (_store!.LoadVault(Root.Directory) is { } json && ProjectVault.Parse(json) is { } vault) SetVault(vault);
+        var treeFiles = tree.Files.Where(f => !ProjectVault.IsVaultFile(f)).ToList();
+        Index = new NoteIndex(Root.Directory, treeFiles);
+        BuildTree(tree.Directories, treeFiles);
+        int available = 0, locked = 0;
+        foreach (var f in treeFiles.Where(NoteIndex.IsText))
         {
-            if (_store!.LoadContent(f.Id) is not { } c) continue;
+            CachedContent? c;
+            try { c = _store.LoadContent(f.Id); }
+            catch (Exception e) when (e is VaultLockedException or System.Security.Cryptography.CryptographicException)
+            {
+                locked++;
+                continue;
+            }
+            if (c == null) continue;
             available++;
             if (NoteOperations.IsLinkScannable(f)) _links.Update(f, c.Text);
         }
-        OfflineInfo = $"Saved copy from {tree.SavedAt:g} · {available} of {tree.Files.Count(NoteIndex.IsText)} text files available";
+        OfflineInfo = $"Saved copy from {tree.SavedAt:g} · {available} of {treeFiles.Count(NoteIndex.IsText)} text files available" +
+                      (locked > 0 ? $" ({locked} more once unlocked)" : "");
         IndexChanged?.Invoke();
         UpdateLinkPanels();
     }
@@ -270,8 +298,12 @@ public partial class NotesViewModel : ObservableObject
             {
                 if (cts.IsCancellationRequested || IsOffline) return;
                 if (_store.CachedETag(f.Id) == SparkClient.ETagFor(f)) continue;
-                var content = await _client.GetTextAsync(f.Id, cts.Token);
-                _store.SaveContent(f, content.Text, content.ETag);
+                try
+                {
+                    var content = await _client.GetTextAsync(f.Id, cts.Token);
+                    _store.SaveContent(f, content.Text, content.ETag);
+                }
+                catch (VaultLockedException) { /* copied once the project is unlocked */ }
             }
             if (IsPinned) OfflineInfo = $"Kept offline · {wanted.Count} text file{(wanted.Count == 1 ? "" : "s")} · synced {DateTime.Now:t}";
         }
@@ -283,7 +315,8 @@ public partial class NotesViewModel : ObservableObject
 
     private void SaveOfflineCopy(SparkFile file, string text, string etag)
     {
-        try { _store?.SaveContent(file, text, etag); } catch (IOException) { }
+        try { _store?.SaveContent(file, text, etag); }
+        catch (Exception e) when (e is IOException or VaultLockedException) { }
     }
 
     /// <summary>Turns "keep this project available offline" on or off.</summary>
@@ -353,7 +386,11 @@ public partial class NotesViewModel : ObservableObject
                      .OrderByDescending(NoteIndex.IsNote).ThenBy(f => f.Name, StringComparer.OrdinalIgnoreCase))
         {
             var folder = GetFolder(f.Directory);
-            folder.Children.Add(new FileNode(f) { Parent = folder, IsSelected = f.Id == selectedId, IsAvailable = Available(f) });
+            folder.Children.Add(new FileNode(f)
+            {
+                Parent = folder, IsSelected = f.Id == selectedId, IsAvailable = Available(f),
+                IsEncrypted = NoteIndex.IsText(f) && Keys?.IsEncrypted(f) == true,
+            });
         }
         // Folders first, then files.
         foreach (var folder in folders.Values)
@@ -440,7 +477,7 @@ public partial class NotesViewModel : ObservableObject
             int lines = 0, matches = 0;
             foreach (var (file, hits) in hitsByFile)
             {
-                var title = NoteIndex.IsNote(file) ? NoteIndex.TitleOf(file) : file.Name;
+                var title = NoteIndex.IsNote(file) ? NoteIndex.TitleOf(file) : NoteIndex.LogicalName(file);
                 var folder = Index.RelativePath(file);
                 folder = folder.Contains('/') ? folder[..folder.LastIndexOf('/')] : "";
                 SearchItems.Add(new SearchGroupItem(file, title, folder, hits.Count, hits[0]));
@@ -452,7 +489,7 @@ public partial class NotesViewModel : ObservableObject
                 ? "No matches"
                 : $"{matches} match{(matches == 1 ? "" : "es")} on {lines} line{(lines == 1 ? "" : "s")} in {hitsByFile.Count} note{(hitsByFile.Count == 1 ? "" : "s")}";
             if (IsOffline) SearchSummary += $" · saved copies{(unavailable > 0 ? $" ({unavailable} not on this PC)" : "")}";
-            else if (unavailable > 0) SearchSummary += $" · {unavailable} couldn't be read";
+            else if (unavailable > 0) SearchSummary += IsLocked ? $" · {unavailable} not searched (project locked)" : $" · {unavailable} couldn't be read";
         }
         catch (OperationCanceledException) { }
         finally
@@ -524,7 +561,7 @@ public partial class NotesViewModel : ObservableObject
         {
             var link = g.First().Link;
             var file = Index.Resolve(link.Target, doc.File.Directory);
-            OutgoingLinks.Add(new LinkItem(link.Target, file == null ? "Not created yet" : Index.RelativePath(file), file, link, file != null));
+            OutgoingLinks.Add(new LinkItem(link.Target, file == null ? "Not created yet" : NoteIndex.LogicalName(Index.RelativePath(file)), file, link, file != null));
         }
     }
 
@@ -556,6 +593,7 @@ public partial class NotesViewModel : ObservableObject
             return;
         }
         if (!await SaveAsync()) return;
+        if (!EnsureUnlocked(file)) return;
         if (IsOffline)
         {
             OpenFromCache(file, heading);
@@ -566,7 +604,7 @@ public partial class NotesViewModel : ObservableObject
             var content = await _client.GetTextAsync(file.Id);
             var latest = Index.Files.FirstOrDefault(f => f.Id == file.Id) ?? file;
             SaveOfflineCopy(latest, content.Text, content.ETag);
-            var session = new NoteSession(_client, file.Id, content.Text, content.ETag);
+            var session = new NoteSession(_client, latest, content.Text, content.ETag);
             session.Log += SyncLog.Write;
             session.SaveFinished += OnSaveFinished;
             Current = new OpenDocument(latest, session);
@@ -578,14 +616,21 @@ public partial class NotesViewModel : ObservableObject
 
     private void OpenFromCache(SparkFile file, string? heading)
     {
-        if (_store?.LoadContent(file.Id) is not { } cached)
+        CachedContent? cached;
+        try { cached = _store?.LoadContent(file.Id); }
+        catch (Exception e) when (e is VaultLockedException or System.Security.Cryptography.CryptographicException)
+        {
+            Ui.Error("Open file", e);
+            return;
+        }
+        if (cached == null)
         {
             Ui.Error("Open file", new InvalidOperationException(
-                $"\"{file.Name}\" isn't saved on this PC, so it can't be opened while offline. " +
+                $"\"{NoteIndex.LogicalName(file)}\" isn't saved on this PC, so it can't be opened while offline. " +
                 "Turn on \"Keep offline\" for this project next time you're connected."));
             return;
         }
-        var session = new NoteSession(_client, file.Id, cached.Text, cached.ETag);
+        var session = new NoteSession(_client, cached.File, cached.Text, cached.ETag);
         session.Log += SyncLog.Write;
         session.SaveFinished += OnSaveFinished;
         Current = new OpenDocument(cached.File, session) { SaveState = $"Offline · saved copy from {cached.SavedAt:g}" };
@@ -920,10 +965,16 @@ public partial class NotesViewModel : ObservableObject
     {
         var name = Path.HasExtension(title) && NoteIndex.IsText(new SparkFile { Name = title }) ? title : title + NoteIndex.NoteExtension;
         if (!ValidName(name)) return null;
-        if (Index.Files.Any(f => f.Directory == directory && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        if (Index.Files.Any(f => f.Directory == directory && NoteIndex.LogicalName(f).Equals(name, StringComparison.OrdinalIgnoreCase)))
         {
             Ui.Error("New note", new InvalidOperationException($"A file named \"{name}\" already exists in that folder."));
             return null;
+        }
+        // Notes in an encrypted project are created encrypted (even when empty), and named to say so.
+        if (Keys?.VaultFor(directory) is { } vault)
+        {
+            if (!Keys.IsUnlocked(vault.KeyId) && !Unlock()) return null;
+            name += NoteIndex.EncryptedSuffix;
         }
         SparkFile? created = null;
         await Ui.Try("Create note", async () =>
@@ -974,7 +1025,7 @@ public partial class NotesViewModel : ObservableObject
             {
                 var backlinks = _links.BacklinksTo(fn.File, Index).Select(b => b.Source.Id).Distinct().Count();
                 var warn = backlinks > 0 ? $"\n\n{backlinks} other note(s) link to it; those links will become unresolved." : "";
-                if (!Ui.Confirm("Delete", $"Permanently delete \"{fn.File.Name}\" from the server?{warn}")) return;
+                if (!Ui.Confirm("Delete", $"Permanently delete \"{NoteIndex.LogicalName(fn.File)}\" from the server?{warn}")) return;
                 await Ui.Try("Delete", async () =>
                 {
                     await _client.DeleteFileAsync(fn.File.Id);
@@ -1014,11 +1065,13 @@ public partial class NotesViewModel : ObservableObject
         if (node is not FileNode fn) return;
         var file = fn.File;
         var isNote = NoteIndex.IsNote(file);
-        var input = Ui.Prompt("Rename", isNote ? "Note title" : "File name", isNote ? NoteIndex.TitleOf(file) : file.Name);
+        var input = Ui.Prompt("Rename", isNote ? "Note title" : "File name", isNote ? NoteIndex.TitleOf(file) : NoteIndex.LogicalName(file));
         if (string.IsNullOrWhiteSpace(input)) return;
         var newName = isNote && !input.EndsWith(NoteIndex.NoteExtension, StringComparison.OrdinalIgnoreCase)
             ? input.Trim() + NoteIndex.NoteExtension : input.Trim();
-        if (newName == file.Name || !ValidName(newName)) return;
+        if (!ValidName(newName)) return;
+        if (NoteIndex.HasEncryptedName(file)) newName += NoteIndex.EncryptedSuffix; // stays marked as encrypted
+        if (newName == file.Name) return;
         await RenameAsync(file, newName);
     }
 
@@ -1027,10 +1080,11 @@ public partial class NotesViewModel : ObservableObject
     {
         if (Ui.BlockedOffline("Convert to note")) return;
         if (Current is not { IsMarkdown: false } doc) return;
-        var newName = Path.GetFileNameWithoutExtension(doc.File.Name) + NoteIndex.NoteExtension;
-        if (!Ui.Confirm("Convert to note", $"Convert \"{doc.File.Name}\" into the rich note \"{newName}\"?\n\n" +
+        var newName = Path.GetFileNameWithoutExtension(NoteIndex.LogicalName(doc.File)) + NoteIndex.NoteExtension;
+        if (!Ui.Confirm("Convert to note", $"Convert \"{NoteIndex.LogicalName(doc.File)}\" into the rich note \"{newName}\"?\n\n" +
                                            "The text is kept as-is and becomes Markdown. Links to the old name are updated.")) return;
         if (!await SaveAsync()) return;
+        if (NoteIndex.HasEncryptedName(doc.File)) newName += NoteIndex.EncryptedSuffix;
         await RenameAsync(doc.File, newName);
     }
 
@@ -1058,6 +1112,291 @@ public partial class NotesViewModel : ObservableObject
                     $"Renamed, but {result.NotesFailed} note(s) linking to it could not be updated."));
             if (wasOpen && !keepOpen) await OpenAsync(Index.Files.FirstOrDefault(f => f.Id == result.File.Id) ?? result.File, null);
             UpdateLinkPanels();
+        });
+    }
+
+    // ---------- Encryption ----------
+    //
+    // A project is encrypted when its root folder holds a vault file (.spark-vault.json). The client's codec (the
+    // Keyring) then encrypts every text written under that folder and decrypts what's read, so everything above it
+    // (editor, links, search, conflicts) works on plain text while the server and the offline copies only hold
+    // ciphertext.
+
+    private Keyring? Keys => _client.Codec as Keyring;
+    private VaultFile? _vault;
+    private SparkFile? _vaultFile;
+    private bool _unlockAsked;
+
+    /// <summary>Largest text file encrypted: the armoured form must stay under the server's 2 MiB save limit.</summary>
+    public const long MaxEncryptBytes = 1_400_000;
+
+    [ObservableProperty] private bool _isEncrypted;
+    [ObservableProperty] private bool _isLocked;
+    /// <summary>Status line under the file panel's header (locked, files left to encrypt, progress); null hides it.</summary>
+    [ObservableProperty] private string? _encryptionInfo;
+    [ObservableProperty] private string _encryptionToolTip = "Encrypt this project's notes";
+    [ObservableProperty] private bool _isEncrypting;
+
+    /// <summary>Text files in an encrypted project not yet named/stored as encrypted.</summary>
+    public int UnencryptedCount { get; private set; }
+
+    public string ProjectName => Root.Name;
+
+    /// <summary>Reads the root folder's vault file (when it changed) and registers it with the keyring.</summary>
+    private async Task LoadVaultAsync(List<SparkFile> all)
+    {
+        // If the vault file disappears, the registration stays for this session: notes keep being encrypted.
+        var vf = all.Where(f => f.Directory == Root.Directory && ProjectVault.IsVaultFile(f)).OrderBy(f => f.CreatedAt).FirstOrDefault();
+        if (vf == null)
+        {
+            UpdateEncryptionState();
+            return;
+        }
+        if (_vault != null && _vaultFile?.Id == vf.Id && _vaultFile.ContentRevision == vf.ContentRevision) return;
+        var json = SparkClient.DecodeUtf8(await _client.GetBytesAsync(vf.Id));
+        var vault = ProjectVault.Parse(json) ?? throw new InvalidOperationException(
+            $"This project's {ProjectVault.FileName} is damaged or from a newer version, so its encrypted notes can't be opened.");
+        _vaultFile = vf;
+        SetVault(vault);
+        try { _store?.SaveVault(Root.Directory, json); } catch (IOException) { }
+    }
+
+    partial void OnIndexChanged(NoteIndex value) => UpdateEncryptionState();
+
+    private void SetVault(VaultFile vault)
+    {
+        _vault = vault;
+        Keys?.Register(Root.Directory, vault);
+        UpdateEncryptionState();
+    }
+
+    private void UpdateEncryptionState()
+    {
+        var keys = Keys;
+        IsEncrypted = _vault != null;
+        IsLocked = _vault != null && keys?.IsUnlocked(_vault.KeyId) != true;
+        UnencryptedCount = _vault == null ? 0 : Index.Files.Count(f => NoteIndex.IsText(f) && !NoteIndex.HasEncryptedName(f));
+        if (IsEncrypting) return;
+        EncryptionInfo = _vault == null ? null
+            : IsLocked ? "Encrypted and locked. Unlock it (lock button above) to read its notes."
+            : UnencryptedCount > 0 ? $"{UnencryptedCount} text file{(UnencryptedCount == 1 ? " isn't" : "s aren't")} encrypted yet. Lock button → Encrypt remaining files."
+            : null;
+        EncryptionToolTip = _vault == null ? "Encrypt this project's notes"
+            : IsLocked ? "Encrypted · locked. Click to unlock"
+            : "Encrypted · unlocked" + (keys?.IsRemembered(_vault.KeyId) == true ? " and remembered on this PC" : " for this session");
+    }
+
+    private void OnKeysChanged()
+    {
+        var wasLocked = IsLocked;
+        UpdateEncryptionState();
+        if (IsLocked && !wasLocked) ForgetDecrypted();
+        else if (!IsLocked && wasLocked) _ = LoadAsync(); // now readable: rescan links, sync offline copies
+    }
+
+    /// <summary>The project was locked: drop decrypted text kept in memory and close an open encrypted note.</summary>
+    private void ForgetDecrypted()
+    {
+        if (Keys is not { } keys) return;
+        var encrypted = Index.Files.Where(keys.IsEncrypted).Select(f => f.Id).ToHashSet();
+        _links.Forget(encrypted.Contains);
+        _searchedText = new();
+        SearchItems.Clear();
+        SearchSummary = null;
+        if (Current is { } doc && encrypted.Contains(doc.File.Id))
+        {
+            // The active workspace saves before locking; a note left dirty elsewhere keeps its text until unlocked.
+            if (doc.IsDirty) doc.SaveState = "Project locked · unlock it to save your changes";
+            else CloseDocument();
+        }
+        UpdateLinkPanels();
+    }
+
+    /// <summary>True when <paramref name="file"/> can be read now, asking for the passphrase if its project is locked.</summary>
+    private bool EnsureUnlocked(SparkFile file)
+    {
+        if (Keys is not { } keys || keys.VaultFor(file.Directory) is not { } vault) return true;
+        return keys.IsUnlocked(vault.KeyId) || Unlock();
+    }
+
+    /// <summary>Asks for the passphrase (or recovery key). Returns true when the project is unlocked.</summary>
+    public bool Unlock()
+    {
+        if (_vault is not { } vault || Keys is not { } keys) return false;
+        if (keys.IsUnlocked(vault.KeyId)) return true;
+        var result = Views.UnlockDialog.Show(Ui.Owner, Root.Name, vault);
+        if (result == null) return false;
+        keys.AddKey(vault.KeyId, result.Key, result.Remember);
+        System.Security.Cryptography.CryptographicOperations.ZeroMemory(result.Key);
+        try { _store?.ProtectUnder(Root.Directory); } catch (Exception e) when (e is IOException or VaultLockedException) { }
+        return true;
+    }
+
+    /// <summary>Forgets the project key on this PC (and in memory) after saving the open note.</summary>
+    public async Task LockAsync()
+    {
+        if (_vault is not { } vault || Keys is not { } keys) return;
+        if (Current is { } doc && keys.IsEncrypted(doc.File))
+        {
+            if (!await SaveAsync()) return;
+            CloseDocument();
+        }
+        keys.Lock(vault.KeyId);
+    }
+
+    /// <summary>
+    /// Encrypts this project: creates its vault (asking for a passphrase and showing the recovery key), then
+    /// encrypts its text files. On an encrypted project, encrypts the files that aren't yet.
+    /// </summary>
+    public async Task EncryptProjectAsync()
+    {
+        if (Keys is not { } keys || Ui.BlockedOffline("Encrypt project")) return;
+        if (_vault == null)
+        {
+            var pass = Views.PassphraseDialog.Show(Ui.Owner, "Encrypt project",
+                $"Notes in \"{Root.Name}\" and its subprojects will be encrypted on this PC before they're uploaded, so the server " +
+                "only ever stores encrypted text. Every device that opens them needs this passphrase (or the recovery key shown next).\n\n" +
+                "Not encrypted: file and folder names, sizes and dates, boards, and files that aren't text (such as images). " +
+                "Copies the server made before now (backups, history) stay unencrypted. Other apps, such as the web UI, will see " +
+                "encrypted text instead of the notes.", "Encrypt");
+            if (pass == null) return;
+            var created = await Ui.Try("Encrypt project", async () =>
+            {
+                var (_, all) = await NoteOperations.ListTreeAsync(_client, Drive, Root.Directory);
+                if (all.Any(f => f.Directory == Root.Directory && ProjectVault.IsVaultFile(f)))
+                    throw new InvalidOperationException("This project was just encrypted from another device. Refresh, then unlock it with that passphrase.");
+                IsEncrypting = true;
+                EncryptionInfo = "Creating the project key…";
+                var (vault, key, code) = await Task.Run(() => ProjectVault.Create(pass));
+                var json = ProjectVault.Serialize(vault);
+                // The vault is uploaded as raw bytes: it must never pass through the codec.
+                _vaultFile = await _client.UploadAsync(Root.DriveLetter, Root.Directory, ProjectVault.FileName, System.Text.Encoding.UTF8.GetBytes(json));
+                try { _store?.SaveVault(Root.Directory, json); } catch (IOException) { }
+                keys.AddKey(vault.KeyId, key, remember: true);
+                System.Security.Cryptography.CryptographicOperations.ZeroMemory(key);
+                SetVault(vault);
+                Views.RecoveryKeyDialog.Show(Ui.Owner, Root.Name, code);
+            });
+            IsEncrypting = false;
+            UpdateEncryptionState();
+            if (!created) return;
+        }
+        else if (!Unlock()) return;
+        await EncryptFilesAsync();
+    }
+
+    /// <summary>Encrypts every text file in the project that isn't yet: content first (ETag-guarded), then the name.</summary>
+    private async Task EncryptFilesAsync()
+    {
+        var reopen = Current?.File;
+        if (Current != null)
+        {
+            if (!await SaveAsync()) return;
+            CloseDocument();
+        }
+        int done = 0, failed = 0, tooLarge = 0, nonText = 0;
+        var failures = new List<string>();
+        IsEncrypting = true;
+        try
+        {
+            await Ui.Try("Encrypt project", async () =>
+            {
+                var (_, all) = await NoteOperations.ListTreeAsync(_client, Drive, Root.Directory);
+                var files = all.Where(f => !ProjectVault.IsVaultFile(f)).ToList();
+                nonText = files.Count(f => !NoteIndex.IsText(f));
+                var todo = files.Where(NoteIndex.IsText).ToList();
+                for (int i = 0; i < todo.Count; i++)
+                {
+                    var f = todo[i];
+                    EncryptionInfo = $"Encrypting {i + 1} of {todo.Count}…";
+                    if (f.SizeBytes > MaxEncryptBytes && !NoteIndex.HasEncryptedName(f))
+                    {
+                        tooLarge++;
+                        failures.Add($"{NoteIndex.LogicalName(Index.RelativePath(f))} (too large)");
+                        continue;
+                    }
+                    try
+                    {
+                        if (await EncryptFileAsync(f)) done++;
+                    }
+                    catch (Exception e) when (!Connectivity.IsNetworkError(e))
+                    {
+                        failed++;
+                        failures.Add($"{NoteIndex.LogicalName(Index.RelativePath(f))} ({(e is SparkApiException { Status: HttpStatusCode.PreconditionFailed } ? "changed while encrypting" : e.Message)})");
+                        SyncLog.Write($"encrypt {f.Id} failed: {e.Message}");
+                    }
+                }
+                try { _store?.ProtectUnder(Root.Directory); } catch (IOException) { }
+            });
+        }
+        finally
+        {
+            IsEncrypting = false;
+        }
+        await Ui.Try("Refresh", RefreshFilesAsync);
+        UpdateEncryptionState();
+
+        var lines = new List<string> { done == 0 ? "No files needed encrypting." : $"Encrypted {done} file{(done == 1 ? "" : "s")}." };
+        if (failures.Count > 0)
+            lines.Add($"\n{failures.Count} couldn't be encrypted (run Encrypt remaining files to retry):\n  " + string.Join("\n  ", failures.Take(12)) +
+                      (failures.Count > 12 ? $"\n  … and {failures.Count - 12} more" : ""));
+        if (nonText > 0) lines.Add($"\n{nonText} file{(nonText == 1 ? " isn't" : "s aren't")} text (images and other files) and stay unencrypted.");
+        System.Windows.MessageBox.Show(Ui.Owner!, string.Join("\n", lines), "Encrypt project",
+            System.Windows.MessageBoxButton.OK, failures.Count > 0 ? System.Windows.MessageBoxImage.Warning : System.Windows.MessageBoxImage.Information);
+
+        if (reopen != null && Index.Files.FirstOrDefault(f => f.Id == reopen.Id
+                || f.Directory == reopen.Directory && NoteIndex.LogicalName(f) == NoteIndex.LogicalName(reopen)) is { } again)
+            await OpenAsync(again, null);
+    }
+
+    /// <summary>Encrypts one file's content (if stored as plain text) and marks its name. Returns true if anything changed.</summary>
+    private async Task<bool> EncryptFileAsync(SparkFile f)
+    {
+        var content = await _client.GetTextAsync(f.Id);
+        var file = f;
+        var etag = content.ETag;
+        bool changed = false;
+        if (!Keys!.WasReadEncrypted(f.Id))
+        {
+            // The file is in the vault's folder, so this save is encrypted. If-Match: an edit made meanwhile wins (412).
+            (file, etag) = await _client.PutTextAsync(f, content.Text, content.ETag);
+            changed = true;
+        }
+        if (!NoteIndex.HasEncryptedName(file))
+        {
+            var renamed = await NoteOperations.RenameFileAsync(_client, file, file.Name + NoteIndex.EncryptedSuffix);
+            if (renamed.Id != file.Id) _store?.RemoveContent(file.Id);
+            file = renamed;
+            etag = SparkClient.ETagFor(renamed);
+            changed = true;
+        }
+        if (changed && _store != null && (_store.HasContent(f.Id) || _store.IsWanted(file))) SaveOfflineCopy(file, content.Text, etag);
+        return changed;
+    }
+
+    /// <summary>Wraps the project key under a new passphrase. Notes aren't re-encrypted; the recovery key is unchanged.</summary>
+    public async Task ChangePassphraseAsync()
+    {
+        if (_vault is not { } vault || _vaultFile is not { } vaultFile || Keys is not { } keys || Ui.BlockedOffline("Change passphrase")) return;
+        if (!Unlock()) return;
+        var pass = Views.PassphraseDialog.Show(Ui.Owner, "Change passphrase",
+            $"Choose a new passphrase for \"{Root.Name}\". The notes don't need re-encrypting and the recovery key stays the same. " +
+            "Devices that remember the project stay unlocked; others will need the new passphrase.\n\n" +
+            "The project key itself doesn't change, so an old copy of the vault file (e.g. in a server backup) still opens with the old passphrase.",
+            "Change");
+        if (pass == null) return;
+        await Ui.Try("Change passphrase", async () =>
+        {
+            var updated = await Task.Run(() => keys.ChangePassphrase(vault, pass));
+            var current = await _client.GetTextAsync(vaultFile.Id);
+            if (ProjectVault.Parse(current.Text)?.KeyId != vault.KeyId)
+                throw new InvalidOperationException("The vault file changed on the server. Refresh and try again.");
+            var json = ProjectVault.Serialize(updated);
+            var (saved, _) = await _client.PutRawTextAsync(vaultFile.Id, json, current.ETag);
+            _vaultFile = saved;
+            SetVault(updated);
+            try { _store?.SaveVault(Root.Directory, json); } catch (IOException) { }
+            Ui.Info("Change passphrase", "The passphrase was changed.");
         });
     }
 }

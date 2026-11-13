@@ -20,7 +20,8 @@ public sealed record CachedTree(List<string> Directories, List<SparkFile> Files,
 ///   pins.json                project ID -> directory kept offline
 ///   trees/{hash}.json        listing of one root project's directory
 ///   content/{fileId}.json    file metadata + ETag
-///   content/{fileId}.txt     note text (UTF-8)
+///   content/{fileId}.txt     note text (UTF-8); encrypted notes stay encrypted (see <see cref="Codec"/>)
+///   vaults/{hash}.json       vault file of an encrypted project, so it can be unlocked offline
 /// </code>
 /// Every write goes to a temporary file first and is then moved into place, so a crash never leaves a
 /// half-written copy behind.
@@ -43,6 +44,12 @@ public sealed class OfflineStore
     }
 
     public string Folder { get; }
+
+    /// <summary>
+    /// Encodes note text before it's written and decodes it when read, like on the server: notes of encrypted
+    /// projects are kept encrypted on disk, and reading one while its project is locked throws.
+    /// </summary>
+    public Spark.Api.IContentCodec? Codec { get; set; }
 
     /// <summary>The store for one server, in its own subfolder of <paramref name="baseFolder"/>.</summary>
     public static OfflineStore ForServer(string baseFolder, string normalisedServerUrl)
@@ -111,7 +118,7 @@ public sealed class OfflineStore
     {
         lock (_gate)
         {
-            WriteText(Path.Combine("content", file.Id + ".txt"), text);
+            WriteText(Path.Combine("content", file.Id + ".txt"), Codec?.Encode(file.Id, file.Directory, text) ?? text);
             Write(Path.Combine("content", file.Id + ".json"), new ContentMeta(file, etag, DateTimeOffset.Now));
         }
     }
@@ -123,7 +130,8 @@ public sealed class OfflineStore
             if (Read<ContentMeta>(Path.Combine("content", fileId + ".json")) is not { } meta) return null;
             var textPath = Path.Combine(Folder, "content", fileId + ".txt");
             if (!File.Exists(textPath)) return null;
-            return new CachedContent(meta.File, File.ReadAllText(textPath, Encoding.UTF8), meta.ETag, meta.SavedAt);
+            var text = File.ReadAllText(textPath, Encoding.UTF8);
+            return new CachedContent(meta.File, Codec?.Decode(fileId, text) ?? text, meta.ETag, meta.SavedAt);
         }
     }
 
@@ -163,6 +171,47 @@ public sealed class OfflineStore
             }
         return removed;
     }
+
+    /// <summary>
+    /// Re-writes saved copies under <paramref name="directory"/> that are stored as plain text through
+    /// <see cref="Codec"/>, so copies made before the project was encrypted get encrypted too. Returns how many.
+    /// </summary>
+    public int ProtectUnder(string directory)
+    {
+        if (Codec == null) return 0;
+        int n = 0;
+        lock (_gate)
+        {
+            foreach (var path in Directory.EnumerateFiles(Path.Combine(Folder, "content"), "*.json"))
+            {
+                if (Read<ContentMeta>(Path.GetRelativePath(Folder, path)) is not { } meta || !IsUnder(meta.File.Directory, directory)) continue;
+                var textPath = Path.Combine(Folder, "content", meta.File.Id + ".txt");
+                if (!File.Exists(textPath)) continue;
+                var raw = File.ReadAllText(textPath, Encoding.UTF8);
+                if (Crypto.NoteCipher.IsEncrypted(raw)) continue;
+                var encoded = Codec.Encode(meta.File.Id, meta.File.Directory, raw);
+                if (encoded == raw) continue;
+                WriteText(Path.Combine("content", meta.File.Id + ".txt"), encoded);
+                n++;
+            }
+        }
+        return n;
+    }
+
+    // ---------- Vaults (encrypted projects) ----------
+
+    public void SaveVault(string rootDirectory, string json) => WriteText(VaultPath(rootDirectory), json);
+
+    public string? LoadVault(string rootDirectory)
+    {
+        var path = Path.Combine(Folder, VaultPath(rootDirectory));
+        try { return File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : null; }
+        catch (IOException) { return null; }
+    }
+
+    public void RemoveVault(string rootDirectory) => TryDelete(Path.Combine(Folder, VaultPath(rootDirectory)));
+
+    private static string VaultPath(string rootDirectory) => Path.Combine("vaults", Hash(rootDirectory) + ".json");
 
     // ---------- Plumbing ----------
 

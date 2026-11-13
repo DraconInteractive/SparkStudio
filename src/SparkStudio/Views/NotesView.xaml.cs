@@ -184,6 +184,37 @@ public partial class NotesView : UserControl
     private void Compare_Click(object sender, RoutedEventArgs e) => _vm?.CompareWithServerCommand.Execute(null);
     private void ConvertToNote_Click(object sender, RoutedEventArgs e) => _vm?.ConvertToNoteCommand.Execute(null);
 
+    /// <summary>The lock button: encrypt the project, or unlock / lock / finish encrypting / change its passphrase.</summary>
+    private async void Encryption_Click(object sender, RoutedEventArgs e)
+    {
+        if (_vm is not { } vm) return;
+        if (!vm.IsEncrypted)
+        {
+            await vm.EncryptProjectAsync();
+            return;
+        }
+        if (vm.IsLocked)
+        {
+            vm.Unlock();
+            return;
+        }
+        var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+        MenuItem Item(string header, Func<Task> action, bool enabled = true)
+        {
+            var item = new MenuItem { Header = header, IsEnabled = enabled };
+            item.Click += async (_, _) => await action();
+            menu.Items.Add(item);
+            return item;
+        }
+        menu.Items.Add(new MenuItem { Header = $"\"{vm.ProjectName}\" is encrypted", IsEnabled = false });
+        menu.Items.Add(new Separator());
+        Item("Lock (forget the key on this PC)", vm.LockAsync);
+        Item(vm.UnencryptedCount > 0 ? $"Encrypt remaining files ({vm.UnencryptedCount})" : "Encrypt remaining files", vm.EncryptProjectAsync,
+            vm.CanEdit && vm.UnencryptedCount > 0);
+        Item("Change passphrase…", vm.ChangePassphraseAsync, vm.CanEdit);
+        menu.IsOpen = true;
+    }
+
     // ---------- Search ----------
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)

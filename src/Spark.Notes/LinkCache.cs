@@ -32,6 +32,16 @@ public sealed class LinkCache
 
     private readonly Dictionary<string, string> _texts = new();
 
+    /// <summary>Drops what's known about the matching files (e.g. notes of a project that was just locked).</summary>
+    public void Forget(Func<string, bool> fileId)
+    {
+        lock (_gate)
+        {
+            foreach (var id in _byFile.Keys.Where(fileId).ToList()) _byFile.Remove(id);
+            foreach (var id in _texts.Keys.Where(fileId).ToList()) _texts.Remove(id);
+        }
+    }
+
     /// <summary>The latest text seen for a file (kept for search), or null if it hasn't been read yet.</summary>
     public string? TextOf(string fileId)
     {

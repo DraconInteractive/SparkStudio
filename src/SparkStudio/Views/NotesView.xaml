@@ -65,6 +65,22 @@
                 <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE72C;" ToolTip="Refresh (F5)" Command="{Binding RefreshCommand}"/>
                 <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE8F4;" ToolTip="New folder" Click="NewFolder_Click" IsEnabled="{Binding CanEdit}"/>
                 <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE70B;" ToolTip="New note" Click="NewNote_Click" IsEnabled="{Binding CanEdit}"/>
+                <Button DockPanel.Dock="Right" Click="Encryption_Click" ToolTip="{Binding EncryptionToolTip}">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource IconButton}">
+                            <Setter Property="Content" Value="&#xE785;"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsEncrypted}" Value="True">
+                                    <Setter Property="Content" Value="&#xE72E;"/>
+                                    <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsLocked}" Value="True">
+                                    <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
                 <ToggleButton DockPanel.Dock="Right" IsChecked="{Binding IsPinned, Mode=OneWay}" Command="{Binding TogglePinCommand}" IsEnabled="{Binding CanEdit}">
                     <ToggleButton.Style>
                         <Style TargetType="ToggleButton">
@@ -111,6 +127,17 @@
                     </Style>
                 </TextBlock.Style>
             </TextBlock>
+            <TextBlock DockPanel.Dock="Top" Text="{Binding EncryptionInfo}" Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="12,0,12,4">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding EncryptionInfo}" Value="{x:Null}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
             <TextBlock DockPanel.Dock="Top" Text="{Binding LoadError}" Foreground="{StaticResource DangerBrush}" TextWrapping="Wrap" Margin="12,4">
                 <TextBlock.Style>
                     <Style TargetType="TextBlock">
@@ -137,7 +164,7 @@
                         </StackPanel>
                     </HierarchicalDataTemplate>
                     <DataTemplate DataType="{x:Type vm:FileNode}">
-                        <StackPanel Orientation="Horizontal" ToolTip="{Binding File.Name}">
+                        <StackPanel Orientation="Horizontal" ToolTip="{Binding Name}">
                             <StackPanel.Style>
                                 <Style TargetType="StackPanel">
                                     <Style.Triggers>
@@ -165,6 +192,19 @@
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsText}" Value="False">
                                                 <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <TextBlock Text="&#xE72E;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9" Margin="6,2,0,0"
+                                       VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" ToolTip="Encrypted">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsEncrypted}" Value="True">
+                                                <Setter Property="Visibility" Value="Visible"/>
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>

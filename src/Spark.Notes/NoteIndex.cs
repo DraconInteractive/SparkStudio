@@ -11,6 +11,8 @@ namespace Spark.Notes;
 public sealed class NoteIndex
 {
     public const string NoteExtension = ".md";
+    /// <summary>Suffix of files encrypted on the client ("Plan.md.enc"); titles, types and links ignore it.</summary>
+    public const string EncryptedSuffix = ".enc";
 
     private readonly List<SparkFile> _files;
 
@@ -23,10 +25,21 @@ public sealed class NoteIndex
         _files = files.ToList();
     }
 
-    public static bool IsNote(SparkFile f) => f.Name.EndsWith(NoteExtension, StringComparison.OrdinalIgnoreCase);
+    /// <summary>True when the name marks the file as encrypted on the client.</summary>
+    public static bool HasEncryptedName(SparkFile f) => HasEncryptedName(f.Name);
+
+    public static bool HasEncryptedName(string name) =>
+        name.Length > EncryptedSuffix.Length && name.EndsWith(EncryptedSuffix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The name without the encrypted suffix: "Plan.md.enc" -> "Plan.md".</summary>
+    public static string LogicalName(SparkFile f) => LogicalName(f.Name);
+
+    public static string LogicalName(string name) => HasEncryptedName(name) ? name[..^EncryptedSuffix.Length] : name;
+
+    public static bool IsNote(SparkFile f) => LogicalName(f).EndsWith(NoteExtension, StringComparison.OrdinalIgnoreCase);
 
     public static bool IsText(SparkFile f) =>
-        IsNote(f) || TextExtensions.Contains(Path.GetExtension(f.Name).ToLowerInvariant());
+        IsNote(f) || TextExtensions.Contains(Path.GetExtension(LogicalName(f)).ToLowerInvariant());
 
     private static readonly HashSet<string> TextExtensions = new()
     {
@@ -34,9 +47,9 @@ public sealed class NoteIndex
         ".cs", ".py", ".js", ".ts", ".kt", ".java", ".c", ".h", ".cpp", ".sh", ".ps1", ".sql", ".html", ".css",
     };
 
-    /// <summary>The link title of a file: notes drop .md, other files keep their extension.</summary>
+    /// <summary>The link title of a file: notes drop .md, other files keep their extension (both drop .enc).</summary>
     public static string TitleOf(SparkFile f) =>
-        IsNote(f) ? f.Name[..^NoteExtension.Length] : f.Name;
+        IsNote(f) ? LogicalName(f)[..^NoteExtension.Length] : LogicalName(f);
 
     public IEnumerable<SparkFile> Notes => _files.Where(IsNote);
 
@@ -62,7 +75,7 @@ public sealed class NoteIndex
             var withExt = target.EndsWith(NoteExtension, cmp) ? target : target + NoteExtension;
             foreach (var f in _files)
             {
-                var rel = RelativePath(f);
+                var rel = LogicalName(RelativePath(f));
                 if (EndsWithPath(rel, target, cmp) || (IsNote(f) && EndsWithPath(rel, withExt, cmp)))
                     yield return f;
             }
@@ -71,7 +84,7 @@ public sealed class NoteIndex
 
         foreach (var f in _files)
         {
-            if (string.Equals(f.Name, target, cmp) ||
+            if (string.Equals(LogicalName(f), target, cmp) ||
                 (IsNote(f) && string.Equals(TitleOf(f), target, cmp)))
                 yield return f;
         }
@@ -96,7 +109,7 @@ public sealed class NoteIndex
     {
         var title = TitleOf(f);
         if (Resolve(title, fromDirectory)?.Id == f.Id) return title;
-        var rel = RelativePath(f);
+        var rel = LogicalName(RelativePath(f));
         if (IsNote(f)) rel = rel[..^NoteExtension.Length];
         var parts = rel.Split('/');
         for (int i = parts.Length - 2; i >= 0; i--)
@@ -112,7 +125,7 @@ public sealed class NoteIndex
     {
         query = query.Trim();
         return _files
-            .Select(f => (File: f, Score: Score(TitleOf(f), RelativePath(f), query)))
+            .Select(f => (File: f, Score: Score(TitleOf(f), LogicalName(RelativePath(f)), query)))
             .Where(x => x.Score > 0)
             .OrderByDescending(x => x.Score)
             .ThenByDescending(x => IsNote(x.File))
