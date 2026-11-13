@@ -21,6 +21,10 @@ public interface IFindTarget
     IEnumerable<Rect> RectsOf(object match);
     string SelectedText { get; }
     void FocusText();
+    /// <summary>Matches hidden in folded sections (not in <see cref="FindAll"/>).</summary>
+    int HiddenCount(string query, SearchOptions options) => 0;
+    /// <summary>Unfolds the sections holding hidden matches; true if anything changed.</summary>
+    bool RevealHidden(string query, SearchOptions options) => false;
 }
 
 public sealed class RichFindTarget(NoteEditor editor) : IFindTarget
@@ -47,6 +51,8 @@ public sealed class RichFindTarget(NoteEditor editor) : IFindTarget
     }
     public string SelectedText => editor.RichBox.Selection.Text;
     public void FocusText() => editor.RichBox.Focus();
+    public int HiddenCount(string query, SearchOptions options) => editor.CountFolded(query, options);
+    public bool RevealHidden(string query, SearchOptions options) => editor.RevealFolded(query, options);
 }
 
 public sealed class PlainFindTarget(TextBox box) : IFindTarget
@@ -129,6 +135,7 @@ public sealed class FindBar : Border
     private IFindTarget? _target;
     private IReadOnlyList<object> _matches = Array.Empty<object>();
     private int _index = -1;
+    private int _hidden;
     private MatchAdorner? _adorner;
 
     public FindBar()
@@ -224,6 +231,7 @@ public sealed class FindBar : Border
         _suppress = false;
         if (_target == null) return;
         _matches = _target.FindAll(query, Options);
+        _hidden = _target.HiddenCount(query, Options);
         _index = _matches.Count == 0 ? -1 : Math.Clamp(pick(_matches), 0, _matches.Count - 1);
         if (_index >= 0) _target.Select(_matches[_index]);
         UpdateCount();
@@ -245,7 +253,21 @@ public sealed class FindBar : Border
     /// <summary>Next (+1) or previous (-1) match, wrapping around.</summary>
     public void Step(int direction)
     {
-        if (_target == null || _matches.Count == 0) return;
+        if (_target == null) return;
+        if (_hidden > 0 && _target.RevealHidden(_box.Text, Options))
+        {
+            // Navigating to matches: unfold the sections that hide some, then carry on from the current match.
+            object? current = _index >= 0 && _index < _matches.Count ? _matches[_index] : null;
+            _matches = _target.FindAll(_box.Text, Options);
+            _hidden = _target.HiddenCount(_box.Text, Options);
+            _index = current != null && _matches.Count > 0 ? IndexOfSameOrNext(current) : -1;
+            EnsureAdorner();
+        }
+        if (_matches.Count == 0)
+        {
+            UpdateCount();
+            return;
+        }
         _index = _index < 0 ? (direction > 0 ? 0 : _matches.Count - 1) : (_index + direction + _matches.Count) % _matches.Count;
         _target.Select(_matches[_index]);
         UpdateCount();
@@ -272,6 +294,7 @@ public sealed class FindBar : Border
         if (_suppress || _target == null || !IsOpen) return;
         object? current = _index >= 0 && _index < _matches.Count ? _matches[_index] : null;
         _matches = _box.Text.Length == 0 ? Array.Empty<object>() : _target.FindAll(_box.Text, Options);
+        _hidden = _box.Text.Length == 0 ? 0 : _target.HiddenCount(_box.Text, Options);
         if (_matches.Count == 0) _index = -1;
         else if (keepPosition && current != null) _index = Math.Min(IndexOfSameOrNext(current), _matches.Count - 1);
         else _index = _target.IndexNearCaret(_matches);
@@ -296,8 +319,12 @@ public sealed class FindBar : Border
 
     private void UpdateCount()
     {
-        _count.Text = _box.Text.Length == 0 ? "" : _matches.Count == 0 ? "No results" : $"{_index + 1} of {_matches.Count}";
-        _box.Foreground = _box.Text.Length > 0 && _matches.Count == 0
+        _count.Text = _box.Text.Length == 0 ? ""
+            : _matches.Count == 0 && _hidden > 0 ? $"{_hidden} folded"
+            : _matches.Count == 0 ? "No results"
+            : $"{_index + 1} of {_matches.Count}" + (_hidden > 0 ? $" +{_hidden} folded" : "");
+        _count.ToolTip = _hidden > 0 ? "Some matches are in folded sections. Press Enter to unfold them and go to the next match." : null;
+        _box.Foreground = _box.Text.Length > 0 && _matches.Count == 0 && _hidden == 0
             ? (Brush)Application.Current.FindResource("DangerBrush")
             : (Brush)Application.Current.FindResource("TextBrush");
     }

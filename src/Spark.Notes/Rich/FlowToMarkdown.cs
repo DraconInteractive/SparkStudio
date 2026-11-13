@@ -26,6 +26,9 @@ public static class FlowToMarkdown
         return sb.ToString();
     }
 
+    /// <summary>Markdown for a run of sibling blocks (used to stash folded content).</summary>
+    internal static string BlocksToMarkdown(IEnumerable<WpfBlock> blocks) => Blocks(blocks);
+
     private static string Blocks(IEnumerable<WpfBlock> blocks)
     {
         var parts = new List<string>();
@@ -54,10 +57,13 @@ public static class FlowToMarkdown
             {
                 var inner = Blocks(s.Blocks);
                 if (inner.Length == 0) return "";
+                if (NoteCallouts.InfoOf(s) != null) inner = NoteCallouts.UnescapeMarker(inner);
                 return string.Join("\n", inner.Split('\n').Select(l => l.Length == 0 ? ">" : "> " + l));
             }
             case Section s:
                 return Blocks(s.Blocks);
+            case BlockUIContainer c when NoteFolding.MarkdownOf(c) is { } folded:
+                return folded; // folded content, written as if it were shown
             case BlockUIContainer when info.Kind == BlockKind.Rule:
                 return "---";
             case BlockUIContainer:

@@ -74,6 +74,18 @@ Use the server's `https://` address: over plain `http` the token travels unencry
   moves down a row, adding one at the end, and Enter on an empty last row leaves the table. Right-click a cell to
   insert or delete rows and columns, align a column (left/center/right) or delete the table. The first row is
   always the header, and cells hold a single line, as in Markdown.
+- Callouts (Obsidian syntax, e.g. `> [!warning]- Title`): the callout button in the toolbar inserts one, or type
+  `[!note] ` (any type) at the start of a line, including inside a callout to nest one. Callouts are tinted by type
+  (note, abstract, info, todo, tip, success, question, warning, failure, danger, bug, example, quote and their
+  aliases). The `[!type]` marker stays visible in the title so it can be edited; right-click a callout to change its
+  type or whether it's **collapsed when the note opens** (the `-` / `+` after the marker). `> ` typed inside a quote
+  or callout nests a quote.
+- Folding: click the chevron left of a heading to fold everything under it (down to the next heading of the same or
+  a higher level), or the chevron after a callout's title to fold its body; nested callouts fold independently.
+  Ctrl+Shift+[ / Ctrl+Shift+] fold / unfold at the cursor; right-click for **Fold all** / **Unfold all**; click the
+  "⋯ N lines folded" marker to unfold. Folding only changes the view: the file is unchanged and saving, links,
+  backlinks and search always see the whole note. Find in note counts folded matches and unfolds them when you move to
+  one; global search results open folded sections. Copying a selection that includes folded content copies all of it.
 - Links: type `[[` to pick a note, or type `[[Title]]` directly. `[[Title#Heading]]`, `[[Title|alias]]` and
   `[[folder/Title]]` work like Obsidian. **Ctrl+Click** follows a link; a link to a missing note offers to create it.
 - Link resolution covers the whole root project (including subprojects): title match, case-insensitive,

@@ -79,6 +79,8 @@ public sealed class MarkdownToFlow
             {
                 var s = NoteDocument.NewQuote();
                 AddBlocks(q, s.Blocks);
+                NoteCallouts.SplitTitle(s);
+                NoteCallouts.ApplyStyle(s);
                 return s;
             }
             case ThematicBreakBlock:

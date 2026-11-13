@@ -27,6 +27,7 @@
                 <Button Style="{StaticResource ToolButton}" Click="Quote_Click" ToolTip="Quote (type &gt; then space)"><TextBlock Text="&#xE9B2;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
                 <Button Style="{StaticResource ToolButton}" Click="Rule_Click" ToolTip="Divider (type --- then Enter)"><TextBlock Text="&#xE738;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
                 <Button x:Name="TableButton" Style="{StaticResource ToolButton}" Click="Table_Click" ToolTip="Table (or type | Name | Value | then Enter). Right-click a table to add or remove rows and columns"><TextBlock Text="&#xF0E2;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
+                <Button Style="{StaticResource ToolButton}" Click="Callout_Click" ToolTip="Callout (or type [!note] then space). Click a callout's chevron to fold it; right-click it to change its type"><TextBlock Text="&#xE8BD;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"/></Button>
                 <Popup x:Name="TablePicker" PlacementTarget="{Binding ElementName=TableButton}" Placement="Bottom" VerticalOffset="4"
                        StaysOpen="False" AllowsTransparency="True">
                     <Border Background="{StaticResource EditorBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"

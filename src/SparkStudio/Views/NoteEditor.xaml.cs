@@ -56,6 +56,13 @@ public partial class NoteEditor : UserControl
         Box.IsInactiveSelectionHighlightEnabled = true; // keep find matches visible while the find bar has focus
         Box.PreviewMouseRightButtonUp += Box_PreviewMouseRightButtonUp;
         BuildTablePicker();
+        CommandManager.AddPreviewExecutedHandler(Box, OnPreviewCommand);
+        DataObject.AddCopyingHandler(Box, OnCopying);
+        // The adorner layer only exists once the editor is in a visible window; try whenever that may have changed.
+        Loaded += (_, _) => AttachFoldAdorner();
+        Box.IsVisibleChanged += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.Loaded, AttachFoldAdorner);
+        Box.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => _foldAdorner?.Refresh()));
+        Box.SizeChanged += (_, _) => _foldAdorner?.Refresh();
     }
 
     /// <summary>The underlying rich text box (for the find bar).</summary>
@@ -85,7 +92,8 @@ public partial class NoteEditor : UserControl
     /// </summary>
     public TextRange? LocateSourceHit(string source, int line0, int column, string query, SearchOptions options)
     {
-        if (!_editedSinceLoad && FlowSearch.BlockForSourceLine(Box.Document, line0) is { } block)
+        RevealFolded(query, options); // matches in folded content must be visible to be selected (and counted)
+        if (!_editedSinceLoad && !_foldsChanged && FlowSearch.BlockForSourceLine(Box.Document, line0) is { } block)
         {
             var from = NoteDocument.GetSourceLine(block);
             var inBlock = FlowSearch.FindIn(FlowSearch.ParagraphsOf(block), query, options);
@@ -117,6 +125,10 @@ public partial class NoteEditor : UserControl
             var conv = new MarkdownToFlow(resolver);
             var doc = conv.Convert(markdown);
             _frontMatter = conv.FrontMatter;
+            // Callouts marked "-" start collapsed (before the document is shown, so it's not an edit).
+            _foldsChanged = NoteFolding.ApplyDefaultFolds(doc.Blocks) > 0;
+            _titleWatch = null;
+            _lastChangeWasUndo = false;
             if (doc.Blocks.Count == 0) doc.Blocks.Add(NewParagraph());
             Box.IsUndoEnabled = false;
             Box.Document = doc;
@@ -126,6 +138,11 @@ public partial class NoteEditor : UserControl
         }
         finally { _loading = false; }
         SyncBlockStyle();
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            AttachFoldAdorner();
+            _foldAdorner?.Refresh();
+        });
     }
 
     public string GetMarkdown() => FlowToMarkdown.Convert(Box.Document, _frontMatter);
@@ -182,7 +199,10 @@ public partial class NoteEditor : UserControl
 
     private void Box_TextChanged(object sender, TextChangedEventArgs e)
     {
+        _foldAdorner?.Refresh();
         if (_loading) return;
+        if (_folding) return; // folding moves content in or out of view; the note's Markdown is unchanged
+        _lastChangeWasUndo = e.UndoAction is UndoAction.Undo or UndoAction.Redo;
         _editedSinceLoad = true;
         Changed?.Invoke();
         if (_editing) return;
@@ -192,6 +212,11 @@ public partial class NoteEditor : UserControl
         if (last.Length > 0 && last[^1] is ']' or '*' or '_' or '~' or '`')
         {
             if (TryConvertTypedLink("") || TryConvertTypedFormatting("")) return;
+        }
+        else if (last.Length > 0 && last[^1] == ' ' && !_lastChangeWasUndo && CalloutShortcutAt(Box.CaretPosition) is { } calloutPara)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, () => ApplyCalloutShortcut(calloutPara));
+            return;
         }
         else if (last.Length > 0 && last[^1] == ' ' && BlockShortcutAt(Box.CaretPosition) is { } shortcut)
         {
@@ -212,6 +237,7 @@ public partial class NoteEditor : UserControl
     private void Box_SelectionChanged(object sender, RoutedEventArgs e)
     {
         SyncBlockStyle();
+        WatchTitles();
         if (Suggest.IsOpen && !_editing) UpdateSuggestions();
     }
 
@@ -431,6 +457,13 @@ public partial class NoteEditor : UserControl
 
     private void Box_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        if (NoteFolding.StashFromVisual(e.OriginalSource as DependencyObject, Box.Document) is { } stash)
+        {
+            // The "⋯ N lines folded" placeholder: unfold.
+            e.Handled = true;
+            UnfoldStash(stash);
+            return;
+        }
         if ((Keyboard.Modifiers & ModifierKeys.Control) == 0) return;
         var pos = Box.GetPositionFromPoint(e.GetPosition(Box), false);
         var h = HyperlinkAt(pos);
@@ -468,6 +501,13 @@ public partial class NoteEditor : UserControl
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         var mods = Keyboard.Modifiers;
         if (key == Key.Apps || (key == Key.F10 && mods == ModifierKeys.Shift)) PrepareContextMenu(null);
+        if (mods == (ModifierKeys.Control | ModifierKeys.Shift) && key is Key.OemOpenBrackets or Key.OemCloseBrackets)
+        {
+            // Ctrl+Shift+[ folds, Ctrl+Shift+] unfolds the section or callout at the caret (read-only too).
+            e.Handled = true;
+            if (FoldTargetAtCaret() is { } t && t.IsFolded == (key == Key.OemCloseBrackets)) ToggleFold(t);
+            return;
+        }
         if (Box.IsReadOnly) return; // our shortcuts edit the document directly; leave navigation/copy to WPF
 
         if (Suggest.IsOpen && SuggestList.Items.Count > 0)
@@ -535,6 +575,13 @@ public partial class NoteEditor : UserControl
             FlushPendingInput();
             HandleBackspace(e);
         }
+        else if (key == Key.Delete && mods == ModifierKeys.None && Box.Selection.IsEmpty &&
+                 Box.CaretPosition.Paragraph is { } dp && CaretAtEnd(dp) && dp.NextBlock is BlockUIContainer next && NoteFolding.IsStash(next))
+        {
+            // Delete at the end of a folded heading/title would merge with (and drop) the hidden content: unfold it instead.
+            e.Handled = true;
+            UnfoldStash(next);
+        }
     }
 
     private void Box_PreviewTextInput(object sender, TextCompositionEventArgs e) { }
@@ -570,6 +617,8 @@ public partial class NoteEditor : UserControl
             return _ => MakeTask(Box.CaretPosition.Paragraph!, false);
         if (Regex.IsMatch(marker, @"^(-\s?)?\[[xX]\]$") && NoteDocument.TaskState(p) == null)
             return _ => MakeTask(Box.CaretPosition.Paragraph!, true);
+        if (marker == ">" && !inList && p.Parent is Section host && NoteCallouts.IsQuote(host))
+            return NestQuote; // inside a quote/callout: nest one level deeper
         if (marker == ">" && !inList)
             return _ => ToggleQuote();
         return null;
@@ -666,14 +715,18 @@ public partial class NoteEditor : UserControl
             return;
         }
 
+        if (p.Parent is Section titled && titled.Blocks.FirstBlock == p && NoteFolding.CalloutStash(titled) is { } calloutStash)
+            UnfoldStash(calloutStash); // Enter in a folded callout's title: show the body the new line goes into
+
         if (CaretAtEnd(p) && info.Kind == BlockKind.Heading)
         {
-            // Enter at the end of a heading continues with normal text.
+            // Enter at the end of a heading continues with normal text (after the hidden content, if it's folded).
             e.Handled = true;
             Edit(() =>
             {
                 var np = NewParagraph();
-                p.SiblingBlocks.InsertAfter(p, np);
+                Block after = NoteFolding.HeadingStash(p) is { } headingStash ? headingStash : p;
+                after.SiblingBlocks!.InsertAfter(after, np);
                 Box.CaretPosition = np.ContentStart;
             });
             SyncBlockStyle();
@@ -741,6 +794,14 @@ public partial class NoteEditor : UserControl
         if (caret.Paragraph is not { } p || !Box.Selection.IsEmpty) return;
         if (TextBefore(p, caret).Length > 0) return;
 
+        // Backspace right after folded content would merge into (and drop) it: unfold it instead.
+        if (LastLeaf(p.PreviousBlock) is BlockUIContainer prevStash && NoteFolding.IsStash(prevStash))
+        {
+            e.Handled = true;
+            UnfoldStash(prevStash);
+            return;
+        }
+
         if (NoteDocument.TaskState(p) != null && caret.CompareTo(p.Inlines.FirstInline.ElementEnd) >= 0)
         {
             e.Handled = true;
@@ -761,6 +822,14 @@ public partial class NoteEditor : UserControl
             Edit(ToggleQuote);
         }
     }
+
+    /// <summary>The last block inside <paramref name="b"/> (descending into quotes and lists), or b itself.</summary>
+    private static Block? LastLeaf(Block? b) => b switch
+    {
+        Section { Blocks.LastBlock: { } last } => LastLeaf(last),
+        List { ListItems.LastListItem.Blocks.LastBlock: { } last } => LastLeaf(last),
+        _ => b,
+    };
 
     // ---------- Formatting commands ----------
 
@@ -1077,7 +1146,8 @@ public partial class NoteEditor : UserControl
             if (anchor?.SiblingBlocks is { } siblings)
             {
                 siblings.InsertAfter(anchor, table);
-                if (replace != null || anchor is Paragraph p && p.Parent is not TableCell && IsEmpty(p)) siblings.Remove(anchor);
+                // (SiblingBlocks is a fresh wrapper per call; a reused one can fail to remove.)
+                if (replace != null || anchor is Paragraph p && p.Parent is not TableCell && IsEmpty(p)) anchor.SiblingBlocks!.Remove(anchor);
             }
             else Box.Document.Blocks.Add(table);
             if (table.NextBlock == null) table.SiblingBlocks!.InsertAfter(table, NewParagraph());
@@ -1174,18 +1244,14 @@ public partial class NoteEditor : UserControl
     }
 
     /// <summary>
-    /// Right-click inside a table gets a menu with table commands (plus cut/copy/paste and spelling suggestions);
-    /// elsewhere the RichTextBox's own menu is used. Runs before the menu opens (mouse button up / menu key).
+    /// Builds the editor's right-click menu before it opens (mouse button up / menu key): spelling suggestions,
+    /// cut/copy/paste, then table, callout and folding commands for where the click was.
     /// </summary>
     private void PrepareContextMenu(TextPointer? at)
     {
-        var cell = Box.IsReadOnly ? null : NoteTables.CellAt(at ?? Box.CaretPosition);
-        if (cell == null)
-        {
-            Box.ClearValue(ContextMenuProperty);
-            return;
-        }
         if (at != null && !Box.Selection.Contains(at)) Box.CaretPosition = at;
+        var cell = Box.IsReadOnly ? null : NoteTables.CellAt(Box.CaretPosition);
+        var callout = NoteCallouts.CalloutAt(Box.CaretPosition);
 
         var menu = new ContextMenu();
         if (Box.GetSpellingError(Box.CaretPosition) is { } spelling)
@@ -1204,6 +1270,7 @@ public partial class NoteEditor : UserControl
         menu.Items.Add(new MenuItem { Command = ApplicationCommands.Copy, CommandTarget = Box });
         menu.Items.Add(new MenuItem { Command = ApplicationCommands.Paste, CommandTarget = Box });
 
+        if (cell != null)
         {
             var table = NoteTables.TableOf(cell);
             var (r, c) = NoteTables.IndexOf(cell);
@@ -1259,11 +1326,385 @@ public partial class NoteEditor : UserControl
                 Box.CaretPosition = after.ContentStart;
             }));
         }
+
+        if (callout != null && NoteCallouts.InfoOf(callout) is { } info && !Box.IsReadOnly)
+        {
+            menu.Items.Add(new Separator());
+            var sub = new MenuItem { Header = "Callout" };
+            foreach (var type in NoteCallouts.Types)
+            {
+                var t = type;
+                var mi = new MenuItem
+                {
+                    Header = Capitalize(t),
+                    IsChecked = NoteCallouts.Canonical(info.Type) == t,
+                    Icon = CalloutIcon(t),
+                };
+                mi.Click += (_, _) => SetCalloutMarker(callout, t, info.Fold);
+                sub.Items.Add(mi);
+            }
+            sub.Items.Add(new Separator());
+            var collapsed = new MenuItem { Header = "Collapsed when the note opens", IsCheckable = true, IsChecked = info.StartsCollapsed };
+            collapsed.Click += (_, _) => SetCalloutMarker(callout, info.Type, info.StartsCollapsed ? null : '-');
+            sub.Items.Add(collapsed);
+            menu.Items.Add(sub);
+        }
+
+        // Folding (allowed read-only too: it only changes the view).
+        menu.Items.Add(new Separator());
+        if (FoldTargetAtCaret() is { } target)
+        {
+            var mi = new MenuItem
+            {
+                Header = target.IsFolded ? "Unfold" : target.IsCallout ? "Fold callout" : "Fold section",
+                InputGestureText = target.IsFolded ? "Ctrl+Shift+]" : "Ctrl+Shift+[",
+            };
+            mi.Click += (_, _) => { ToggleFold(target); Box.Focus(); };
+            menu.Items.Add(mi);
+        }
+        var foldAll = new MenuItem { Header = "Fold all" };
+        foldAll.Click += (_, _) => { FoldAll(); Box.Focus(); };
+        var unfoldAll = new MenuItem { Header = "Unfold all", IsEnabled = NoteFolding.AllStashes(Box.Document).Count > 0 };
+        unfoldAll.Click += (_, _) => { UnfoldAll(); Box.Focus(); };
+        menu.Items.Add(foldAll);
+        menu.Items.Add(unfoldAll);
+
         Box.ContextMenu = menu;
     }
 
+    private static string Capitalize(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
+
+    private static TextBlock CalloutIcon(string type) => new()
+    {
+        Text = NoteCallouts.GlyphOf(type),
+        FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+        Foreground = NoteCallouts.EdgeBrush(type),
+        VerticalAlignment = VerticalAlignment.Center,
+        HorizontalAlignment = HorizontalAlignment.Center,
+    };
+
     private void Box_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e) =>
         PrepareContextMenu(Box.GetPositionFromPoint(e.GetPosition(Box), true));
+
+    // ---------- Folding ----------
+
+    private FoldAdorner? _foldAdorner;
+    /// <summary>True while a fold/unfold edits the document: the note's Markdown doesn't change, so it isn't "edited".</summary>
+    private bool _folding;
+    /// <summary>Folds changed the document since loading (block source lines no longer line up with the file).</summary>
+    private bool _foldsChanged;
+    /// <summary>The last text change came from undo/redo (don't restyle in response, or Ctrl+Z could get stuck).</summary>
+    private bool _lastChangeWasUndo;
+    /// <summary>The callout/quote title paragraph the caret was last in (restyled when the caret leaves it).</summary>
+    private Paragraph? _titleWatch;
+
+    private void AttachFoldAdorner()
+    {
+        if (_foldAdorner != null || AdornerLayer.GetAdornerLayer(Box) is not { } layer) return;
+        _foldAdorner = new FoldAdorner(Box, FoldTargets);
+        _foldAdorner.Toggle += t => { ToggleFold(t); Box.Focus(); };
+        layer.Add(_foldAdorner);
+    }
+
+    private FlowDocument ConvertForUnfold(string markdown) => new MarkdownToFlow(_resolver).Convert(markdown);
+
+    /// <summary>Every heading and callout that can fold (or is folded), in document order.</summary>
+    private IEnumerable<FoldTarget> FoldTargets()
+    {
+        IEnumerable<FoldTarget> Walk(IEnumerable<Block> blocks)
+        {
+            foreach (var b in blocks.ToList())
+            {
+                switch (b)
+                {
+                    case Paragraph p when NoteFolding.IsFoldableHeading(p):
+                        if (NoteFolding.HeadingStash(p) != null) yield return new FoldTarget(p, false, true, null);
+                        else if (NoteFolding.CanFoldHeading(p)) yield return new FoldTarget(p, false, false, null);
+                        break;
+                    case Section s:
+                        if (NoteCallouts.InfoOf(s) is { } info)
+                        {
+                            var folded = NoteFolding.CalloutStash(s) != null;
+                            if (folded || NoteFolding.CanFoldCallout(s))
+                                yield return new FoldTarget(s, true, folded, NoteCallouts.EdgeBrush(info.Type));
+                        }
+                        foreach (var t in Walk(s.Blocks)) yield return t;
+                        break;
+                    case List l:
+                        foreach (var li in l.ListItems.ToList())
+                            foreach (var t in Walk(li.Blocks)) yield return t;
+                        break;
+                }
+            }
+        }
+        return Walk(Box.Document.Blocks);
+    }
+
+    /// <summary>The fold target for the caret: its heading, its callout, or the nearest heading above it.</summary>
+    private FoldTarget? FoldTargetAtCaret()
+    {
+        var targets = FoldTargets().ToList();
+        var p = Box.CaretPosition.Paragraph;
+        if (p != null && targets.FirstOrDefault(t => ReferenceEquals(t.Element, p)) is { } heading) return heading;
+        if (NoteCallouts.CalloutAt(Box.CaretPosition) is { } callout && targets.FirstOrDefault(t => ReferenceEquals(t.Element, callout)) is { } c)
+            return c;
+        // Nearest heading above the caret in the same container.
+        for (Block? b = p; b != null; b = b.PreviousBlock)
+            if (targets.FirstOrDefault(t => ReferenceEquals(t.Element, b)) is { } above) return above;
+        return null;
+    }
+
+    private void FoldEdit(Action change)
+    {
+        _folding = true;
+        try { Edit(change); }
+        finally { _folding = false; }
+        _foldsChanged = true;
+        _foldAdorner?.Refresh();
+    }
+
+    public void ToggleFold(FoldTarget target)
+    {
+        switch (target.Element)
+        {
+            case Paragraph h when NoteFolding.HeadingStash(h) is { } stash:
+                UnfoldStash(stash);
+                break;
+            case Paragraph h:
+                FoldEdit(() =>
+                {
+                    bool caretInside = NoteFolding.HeadingRange(h) is { Count: > 0 } r &&
+                                       Box.CaretPosition.CompareTo(r[0].ElementStart) >= 0 && Box.CaretPosition.CompareTo(r[^1].ElementEnd) <= 0;
+                    NoteFolding.FoldHeading(h);
+                    if (caretInside) Box.CaretPosition = h.ContentEnd;
+                });
+                break;
+            case Section s when NoteFolding.CalloutStash(s) is { } stash:
+                UnfoldStash(stash);
+                break;
+            case Section s:
+                FoldEdit(() =>
+                {
+                    bool caretInside = s.Blocks.Count > 1 && Box.CaretPosition.CompareTo(s.Blocks.FirstBlock.ElementEnd) >= 0 &&
+                                       Box.CaretPosition.CompareTo(s.ContentEnd) <= 0;
+                    NoteFolding.FoldCallout(s);
+                    if (caretInside && s.Blocks.FirstBlock is Paragraph title) Box.CaretPosition = title.ContentEnd;
+                });
+                break;
+        }
+    }
+
+    private void UnfoldStash(BlockUIContainer stash, bool applyDefaults = true) =>
+        FoldEdit(() =>
+        {
+            var restored = NoteFolding.Unfold(stash, ConvertForUnfold);
+            if (!applyDefaults)
+                foreach (var b in restored.SelectMany(AllBlocks).OfType<BlockUIContainer>().Where(NoteFolding.IsStash).ToList())
+                    NoteFolding.Unfold(b, ConvertForUnfold);
+        });
+
+    private static IEnumerable<Block> AllBlocks(Block b)
+    {
+        yield return b;
+        IEnumerable<Block> children = b switch
+        {
+            Section s => s.Blocks,
+            List l => l.ListItems.SelectMany(li => li.Blocks),
+            _ => Array.Empty<Block>(),
+        };
+        foreach (var c in children.ToList())
+            foreach (var d in AllBlocks(c)) yield return d;
+    }
+
+    /// <summary>Folds every callout and heading, innermost and last first so outer folds contain folded inner ones.</summary>
+    private void FoldAll()
+    {
+        FoldEdit(() =>
+        {
+            foreach (var t in FoldTargets().Where(t => !t.IsFolded).Reverse().ToList())
+            {
+                if (t.Element is Section s) NoteFolding.FoldCallout(s);
+                else if (t.Element is Paragraph h) NoteFolding.FoldHeading(h);
+            }
+        });
+    }
+
+    private void UnfoldAll()
+    {
+        FoldEdit(() =>
+        {
+            // Unfolding re-folds nested "collapsed by default" callouts; keep going until nothing is folded.
+            for (int guard = 0; guard < 1000 && NoteFolding.AllStashes(Box.Document) is { Count: > 0 } stashes; guard++)
+                foreach (var s in stashes) NoteFolding.Unfold(s, ConvertForUnfold);
+        });
+    }
+
+    /// <summary>Matches of <paramref name="query"/> hidden in folded content.</summary>
+    public int CountFolded(string query, SearchOptions options) =>
+        query.Length == 0 ? 0 : NoteFolding.AllStashes(Box.Document).Sum(s => NoteSearch.Count(NoteFolding.MarkdownOf(s) ?? "", query, options));
+
+    /// <summary>Unfolds every folded section containing <paramref name="query"/> (and folds inside them). Returns true if any.</summary>
+    public bool RevealFolded(string query, SearchOptions options)
+    {
+        if (query.Length == 0) return false;
+        bool any = false;
+        for (int guard = 0; guard < 1000; guard++)
+        {
+            var hits = NoteFolding.AllStashes(Box.Document)
+                .Where(s => NoteSearch.Count(NoteFolding.MarkdownOf(s) ?? "", query, options) > 0).ToList();
+            if (hits.Count == 0) break;
+            FoldEdit(() => { foreach (var s in hits) NoteFolding.Unfold(s, ConvertForUnfold); });
+            any = true;
+        }
+        return any;
+    }
+
+    /// <summary>Unfolds folded content inside the selection before it's copied or cut, so the clipboard gets all of it.</summary>
+    private void OnPreviewCommand(object sender, ExecutedRoutedEventArgs e)
+    {
+        if (e.Command != ApplicationCommands.Copy && e.Command != ApplicationCommands.Cut) return;
+        var sel = Box.Selection;
+        if (sel.IsEmpty) return;
+        var inside = StashesIn(sel);
+        if (inside.Count == 0) return;
+        var start = sel.Start.GetPositionAtOffset(0, LogicalDirection.Backward)!;
+        var end = sel.End.GetPositionAtOffset(0, LogicalDirection.Forward)!;
+        foreach (var s in inside) UnfoldStash(s, applyDefaults: false);
+        Box.Selection.Select(start, end);
+    }
+
+    private List<BlockUIContainer> StashesIn(TextRange range) =>
+        NoteFolding.AllStashes(Box.Document)
+            .Where(s => range.Start.CompareTo(s.ElementEnd) < 0 && range.End.CompareTo(s.ElementStart) > 0).ToList();
+
+    /// <summary>Dragging a selection that contains folded content would lose it; don't start such a drag.</summary>
+    private void OnCopying(object sender, DataObjectCopyingEventArgs e)
+    {
+        if (e.IsDragDrop && StashesIn(Box.Selection).Count > 0) e.CancelCommand();
+    }
+
+    // ---------- Callouts ----------
+
+    private static readonly Regex TypedCalloutMarker = new(@"^\[![A-Za-z][\w-]*\][+-]? $", RegexOptions.Compiled);
+
+    /// <summary>The paragraph whose start was just typed as a callout marker ("[!tip] "), if any.</summary>
+    private Paragraph? CalloutShortcutAt(TextPointer caret)
+    {
+        if (caret.Paragraph is not { } p || !Box.Selection.IsEmpty) return null;
+        if (NoteDocument.InfoOf(p).Kind != BlockKind.Paragraph || p.Parent is ListItem or TableCell) return null;
+        if (!TypedCalloutMarker.IsMatch(TextBefore(p, caret))) return null;
+        // Already the (styled) title of this callout: nothing to do.
+        if (p.Parent is Section q && q.Blocks.FirstBlock == p && NoteCallouts.InfoOf(q) != null && q.Background != null) return null;
+        return p;
+    }
+
+    /// <summary>
+    /// "[!type] " typed at the start of a paragraph makes a callout: the first line of a quote becomes its title;
+    /// any other paragraph (including one inside a callout, for nesting) is wrapped in a new callout.
+    /// </summary>
+    private void ApplyCalloutShortcut(Paragraph p)
+    {
+        if (p.Parent == null) return;
+        if (p.Parent is Section q && NoteCallouts.IsQuote(q) && q.Blocks.FirstBlock == p)
+        {
+            Edit(() => NoteCallouts.ApplyStyle(q));
+            _foldAdorner?.Refresh();
+            return;
+        }
+        var offset = TextBefore(p, Box.CaretPosition).Length;
+        Edit(() =>
+        {
+            var s = NoteDocument.NewQuote();
+            p.SiblingBlocks!.InsertBefore(p, s);
+            p.SiblingBlocks!.Remove(p);
+            s.Blocks.Add(p);
+            NoteCallouts.ApplyStyle(s);
+            Box.CaretPosition = p.Inlines.FirstInline is Run r && r.Text.Length >= offset
+                ? r.ContentStart.GetPositionAtOffset(offset) ?? p.ContentEnd
+                : p.ContentEnd;
+        });
+        _foldAdorner?.Refresh();
+    }
+
+    /// <summary>"&gt; " typed inside a quote or callout nests a new quote there (rather than leaving the quote).</summary>
+    private void NestQuote(Paragraph p)
+    {
+        if (p.Parent is not Section) return;
+        var s = NoteDocument.NewQuote();
+        p.SiblingBlocks!.InsertBefore(p, s);
+        p.SiblingBlocks!.Remove(p);
+        s.Blocks.Add(p);
+        Box.CaretPosition = p.ContentStart;
+    }
+
+    private void SetCalloutMarker(Section callout, string type, char? fold)
+    {
+        bool ok = false;
+        Edit(() => ok = NoteCallouts.SetMarker(callout, type, fold));
+        if (!ok)
+            MessageBox.Show(Window.GetWindow(this), "The callout's [!type] marker is partly formatted, so it can't be changed from the menu. Edit its title text instead.",
+                "Callout", MessageBoxButton.OK, MessageBoxImage.Information);
+        _foldAdorner?.Refresh();
+        Box.Focus();
+    }
+
+    /// <summary>
+    /// Inserts a callout after the caret's block. Inside a quote or callout it goes in there (nested); an empty
+    /// paragraph is replaced. The caret lands at the end of the title, ready to type it.
+    /// </summary>
+    private void InsertCallout(string type)
+    {
+        var caretPara = Box.CaretPosition.Paragraph;
+        if (caretPara?.Parent is Section host && host.Blocks.FirstBlock == caretPara && NoteFolding.CalloutStash(host) is { } stash)
+            UnfoldStash(stash); // inserting into a folded callout's body: show it first
+        caretPara = Box.CaretPosition.Paragraph;
+        Block? anchor = caretPara?.Parent is Section q && NoteCallouts.IsQuote(q) ? caretPara : TopBlock(out _);
+        Edit(() =>
+        {
+            var s = NoteCallouts.Create(type);
+            if (anchor?.SiblingBlocks is { } siblings)
+            {
+                siblings.InsertAfter(anchor, s);
+                bool isTitle = anchor.Parent is Section a && a.Blocks.FirstBlock == anchor;
+                if (anchor is Paragraph p && !isTitle && p.Parent is not TableCell && IsEmpty(p)) anchor.SiblingBlocks!.Remove(anchor);
+            }
+            else Box.Document.Blocks.Add(s);
+            if (s.NextBlock == null && s.Parent is FlowDocument) s.SiblingBlocks!.InsertAfter(s, NewParagraph());
+            Box.CaretPosition = ((Paragraph)s.Blocks.FirstBlock).ContentEnd;
+        });
+        _foldAdorner?.Refresh();
+        Box.Focus();
+    }
+
+    private void Callout_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu { PlacementTarget = (UIElement)sender, Placement = PlacementMode.Bottom };
+        foreach (var type in NoteCallouts.Types)
+        {
+            var t = type;
+            var mi = new MenuItem { Header = Capitalize(t), Icon = CalloutIcon(t) };
+            mi.Click += (_, _) => InsertCallout(t);
+            menu.Items.Add(mi);
+        }
+        menu.IsOpen = true;
+    }
+
+    /// <summary>Restyles a quote whose title the caret just left (its [!type] marker may have been typed or edited).</summary>
+    private void WatchTitles()
+    {
+        var p = Box.CaretPosition.Paragraph;
+        if (_titleWatch is { } prev && !ReferenceEquals(prev, p) && !_lastChangeWasUndo && !Box.IsReadOnly &&
+            prev.Parent is Section s && NoteCallouts.IsQuote(s) && s.Blocks.FirstBlock == prev)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+            {
+                if (s.Parent == null) return;
+                Edit(() => NoteCallouts.ApplyStyle(s));
+                _foldAdorner?.Refresh();
+            });
+        }
+        _titleWatch = p?.Parent is Section q && NoteCallouts.IsQuote(q) && q.Blocks.FirstBlock == p ? p : null;
+    }
 
     // ---------- Paste ----------
 

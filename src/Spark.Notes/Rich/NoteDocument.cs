@@ -5,7 +5,7 @@ using System.Windows.Media;
 
 namespace Spark.Notes.Rich;
 
-public enum BlockKind { Paragraph, Heading, CodeBlock, Quote, Rule, Table, Raw }
+public enum BlockKind { Paragraph, Heading, CodeBlock, Quote, Rule, Table, Raw, Fold }
 
 /// <summary>Stored in <see cref="FrameworkContentElement.Tag"/> of blocks to record their Markdown meaning.</summary>
 public sealed record BlockInfo(BlockKind Kind, int Level = 0, string? Language = null);
@@ -57,6 +57,7 @@ public static class NoteDocument
     public static BlockInfo InfoOf(Block b)
     {
         if (b.Tag is BlockInfo info) return info;
+        if (NoteFolding.IsStash(b)) return new BlockInfo(BlockKind.Fold);
         switch (b)
         {
             case Paragraph p when IsCodeFont(p.FontFamily) && p.Background != null:
